@@ -67,22 +67,22 @@ Implement the complete Flappy Kiro game as a single `index.html` file with vanil
     - **Validates: Requirements 4.3, 4.4**
   - [x] 5.4 Implement pipe scrolling: subtract `pipeState.speed` from each pipe's `x` each tick; release pipes whose right edge goes below 0
     - _Requirements: 4.2, 4.7_
-  - [ ]* 5.5 Write property test for pipe scrolls by speed (Property 7)
+  - [x] 5.5 Write property test for pipe scrolls by speed (Property 7)
     - **Property 7: Pipe scrolls by speed each tick**
     - **Validates: Requirements 4.2**
-  - [ ]* 5.6 Write property test for off-screen pipes removed (Property 8)
+  - [x] 5.6 Write property test for off-screen pipes removed (Property 8)
     - **Property 8: Off-screen pipes are removed**
     - **Validates: Requirements 4.7**
   - [x] 5.7 Implement progressive speed increase: after every `speedMilestone` pipes passed, add `speedIncrement` to `pipeState.speed`, capped at `maxSpeed`
     - _Requirements: 4.5_
-  - [ ]* 5.8 Write property test for pipe speed capped (Property 9)
+  - [x] 5.8 Write property test for pipe speed capped (Property 9)
     - **Property 9: Pipe speed is capped**
     - **Validates: Requirements 4.5**
 
 - [x] 6. Implement collision detection and boundary checks
   - [x] 6.1 Implement `ghostyCircle()` returning `{cx, cy, r}` using `CONFIG.hitboxInset`
     - _Requirements: 5.1_
-  - [ ]* 6.2 Write property test for Ghosty hitbox radius (Property 10)
+  - [x] 6.2 Write property test for Ghosty hitbox radius (Property 10)
     - **Property 10: Ghosty circle hitbox radius is correct**
     - **Validates: Requirements 5.1**
   - [x] 6.3 Implement `pipeRects(pipe)` returning the two axis-aligned rects (top and bottom pipe bodies including caps)
@@ -93,7 +93,7 @@ Implement the complete Flappy Kiro game as a single `index.html` file with vanil
     - _Requirements: 3.7, 3.8, 5.6, 5.7_
   - [x] 6.6 Implement per-frame collision loop: skip if `ghosty.invincible`; on overlap call `triggerPipeCollision()` which sets invincibility timer, starts flash animation, and schedules game over after `invincibilityMs`
     - _Requirements: 5.3, 5.4, 5.5_
-  - [ ]* 6.7 Write property test for collision triggers game over after invincibility (Property 11)
+  - [x] 6.7 Write property test for collision triggers game over after invincibility (Property 11)
     - **Property 11: Collision triggers game over after invincibility**
     - **Validates: Requirements 5.3, 5.4, 5.5**
 
@@ -103,22 +103,22 @@ Implement the complete Flappy Kiro game as a single `index.html` file with vanil
 - [x] 8. Implement scoring and high score persistence
   - [x] 8.1 Implement score increment: when `ghosty.x > pipe.x + pipeWidth / 2` and `!pipe.scored`, increment score, mark pipe scored, and call `playScoreChime()`
     - _Requirements: 7.1_
-  - [ ]* 8.2 Write property test for score increments on pipe pass (Property 16)
+  - [x] 8.2 Write property test for score increments on pipe pass (Property 16)
     - **Property 16: Score increments on pipe pass**
     - **Validates: Requirements 7.1**
   - [x] 8.3 Implement `formatHUD(score, highScore)` returning `"Score: N | High: N"`; render it on canvas during PLAYING
     - _Requirements: 7.2_
-  - [ ]* 8.4 Write property test for HUD format (Property 17)
+  - [x] 8.4 Write property test for HUD format (Property 17)
     - **Property 17: HUD format is correct**
     - **Validates: Requirements 7.2**
   - [x] 8.5 On game over, compare score to high score; update and persist to `localStorage` if higher
     - _Requirements: 7.3, 7.4, 6.8_
-  - [ ]* 8.6 Write property test for high score persistence round-trip (Property 15)
+  - [x] 8.6 Write property test for high score persistence round-trip (Property 15)
     - **Property 15: High score persistence round-trip**
     - **Validates: Requirements 6.8, 7.3, 7.4**
   - [x] 8.7 Implement `resetGame()`: set score to 0, release all active pipes back to pool, reset Ghosty position and velocity, transition to PLAYING
     - _Requirements: 6.7, 8.3, 8.4_
-  - [ ]* 8.8 Write property test for game reset clears state (Property 14)
+  - [x] 8.8 Write property test for game reset clears state (Property 14)
     - **Property 14: Game reset clears state**
     - **Validates: Requirements 6.7, 8.3, 8.4**
 
@@ -127,7 +127,7 @@ Implement the complete Flappy Kiro game as a single `index.html` file with vanil
     - _Requirements: 9.1_
   - [x] 9.2 Implement two parallax cloud layers: each cloud is a rounded rectangle; scroll each layer at its configured speed and opacity; wrap clouds when they scroll off-screen
     - _Requirements: 9.3, 9.4_
-  - [ ]* 9.3 Write property test for cloud layer distinctness (Property 18)
+  - [x] 9.3 Write property test for cloud layer distinctness (Property 18)
     - **Property 18: Cloud layers have distinct speeds and opacities**
     - **Validates: Requirements 9.3, 9.4**
   - [x] 9.4 Implement pipe renderer: draw pipe body and cap (wider rect at gap-facing end) in green with darker outline; batch all pipes in a single fill/stroke style block

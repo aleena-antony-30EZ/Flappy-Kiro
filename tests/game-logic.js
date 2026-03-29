@@ -150,8 +150,72 @@ export function isGapYInBounds(gapY, gapMargin, pipeGap, canvasHeight) {
   return gapY >= minGapY && gapY <= maxGapY;
 }
 
+// Advance a pipe's x position by one physics tick at the given speed.
+export function scrollPipeX(x, speed) {
+  return x - speed;
+}
+
+// Returns true when a pipe's right edge has scrolled fully off the left of the canvas.
+export function isPipeOffScreen(pipeX, pipeWidth) {
+  return pipeX + pipeWidth < 0;
+}
+
+// Simulate one tick of pipe scrolling and return only the pipes that remain on-screen.
+export function tickAndFilterPipes(pipes, speed, pipeWidth) {
+  return pipes
+    .map(p => ({ ...p, x: p.x - speed }))
+    .filter(p => !isPipeOffScreen(p.x, pipeWidth));
+}
+
 export function shouldScorePipe(ghostyCx, pipeCx) {
   return ghostyCx > pipeCx;
+}
+
+// ─── High score persistence ───────────────────────────────────
+
+const HIGH_SCORE_KEY = 'flappyKiroHigh';
+
+export function saveHighScore(score, storage = localStorage) {
+  try { storage.setItem(HIGH_SCORE_KEY, String(score)); } catch (e) {}
+}
+
+export function loadHighScore(storage = localStorage) {
+  try { return parseInt(storage.getItem(HIGH_SCORE_KEY) || '0', 10); } catch (e) { return 0; }
+}
+
+export function updateHighScore(currentScore, currentHigh, storage = localStorage) {
+  if (currentScore > currentHigh) {
+    saveHighScore(currentScore, storage);
+    return currentScore;
+  }
+  return currentHigh;
+}
+
+// ─── Collision / invincibility simulation ────────────────────
+
+/**
+ * Simulates the invincibility countdown after a pipe collision.
+ * Returns the game state after the invincibility period expires.
+ *
+ * @param {number} invincibilityMs - Total invincibility duration in ms
+ * @param {number} fixedStep       - ms per physics tick (1000/60)
+ * @returns {{ isInvincible: boolean, gameState: string }}
+ */
+export function simulateInvincibilityExpiry(invincibilityMs, fixedStep) {
+  let timer = invincibilityMs;
+  let isInvincible = true;
+  let gameState = 'PLAYING';
+
+  // Tick until the timer expires (mirrors updateInvincibility in the game)
+  while (isInvincible) {
+    timer -= fixedStep;
+    if (timer <= 0) {
+      isInvincible = false;
+      gameState = 'GAME_OVER';
+    }
+  }
+
+  return { isInvincible, gameState };
 }
 
 // ─── State machine ───────────────────────────────────────────

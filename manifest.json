@@ -1,0 +1,26 @@
+{
+  "name": "Flappy Kiro",
+  "short_name": "Flappy Kiro",
+  "description": "Guide Ghosty through endless pipes in this retro browser game.",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e",
+  "icons": [
+    {
+      "src": "assets/ghosty.png",
+      "sizes": "32x32",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/ghosty.png",
+      "sizes": "32x32",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": ["games"],
+  "screenshots": []
+}

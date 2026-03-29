@@ -2,8 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#1a1a2e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Flappy Kiro" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="assets/ghosty.png" />
   <title>Flappy Kiro</title>
+  <!-- Preload game assets for faster startup -->
+  <link rel="preload" href="assets/ghosty.png" as="image" />
+  <link rel="preload" href="assets/jump.wav" as="audio" />
+  <link rel="preload" href="assets/game_over.wav" as="audio" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
@@ -16,12 +26,17 @@
       justify-content: center;
       width: 100vw;
       height: 100vh;
+      height: 100dvh; /* mobile browsers: excludes dynamic toolbar */
       overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
     }
     #gameCanvas {
       display: block;
       image-rendering: pixelated;
       image-rendering: crisp-edges;
+      touch-action: none; /* prevent scroll/zoom on tap */
+      -webkit-tap-highlight-color: transparent;
     }
     #fatalError {
       display: none;
@@ -35,11 +50,56 @@
       padding: 40px;
       line-height: 2;
     }
+    /* Nickname overlay */
+    #nicknameOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.82);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 16px;
+      z-index: 10;
+    }
+    #nicknameOverlay.visible { display: flex; }
+    #nicknameOverlay label {
+      color: #ffe066;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 11px;
+      letter-spacing: 1px;
+    }
+    #nicknameInput {
+      background: #1a1a2e;
+      border: 2px solid #ffe066;
+      color: #ffffff;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 14px;
+      padding: 10px 14px;
+      text-align: center;
+      width: 200px;
+      outline: none;
+      text-transform: uppercase;
+    }
+    #nicknameBtn {
+      background: #ffe066;
+      border: none;
+      color: #1a1a2e;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 10px;
+      padding: 10px 20px;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
   <canvas id="gameCanvas"></canvas>
   <div id="fatalError"></div>
+  <div id="nicknameOverlay">
+    <label for="nicknameInput">ENTER YOUR NAME</label>
+    <input id="nicknameInput" type="text" maxlength="12" placeholder="GHOSTY" autocomplete="off" spellcheck="false" />
+    <button id="nicknameBtn">PLAY</button>
+  </div>
 
   <script>
 // ═══════════════════════════════════════════════════════════════
@@ -309,6 +369,8 @@ function onStateEnter(state) {
 
 function onEnterPlaying() {
   resetGame();
+  _analytics.sessionStart = performance.now();
+  trackEvent('game_start');
   startLoop();
 }
 
@@ -623,12 +685,12 @@ function emitParticles() {
 }
 
 function renderParticles() {
+  // Batch all particles: set fill colour once, vary only globalAlpha per particle
   ctx.fillStyle = 'rgba(200, 220, 255, 1)';
   for (let i = 0; i < MAX_PARTICLES; i++) {
     const p = particles[i];
     if (!p.active) continue;
-    const alpha = (p.life / p.maxLife) * 0.6;
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha = (p.life / p.maxLife) * 0.6;
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
     ctx.fill();
@@ -648,6 +710,131 @@ const scoreState = {
 };
 
 const scorePopups = [];
+
+// ═══════════════════════════════════════════════════════════════
+// 9b. LEADERBOARD API
+// ═══════════════════════════════════════════════════════════════
+
+const API_BASE = (typeof LEADERBOARD_API !== 'undefined' && LEADERBOARD_API)
+  ? LEADERBOARD_API
+  : null; // set via build-time replacement or leave null to disable
+
+let playerNickname = (() => {
+  try { return localStorage.getItem('flappyKiroNick') || ''; } catch (e) { return ''; }
+})();
+
+// Leaderboard data fetched from API (top 10)
+let leaderboardData = [];
+
+function saveNickname(nick) {
+  try { localStorage.setItem('flappyKiroNick', nick); } catch (e) {}
+}
+
+async function submitScore(score) {
+  if (!API_BASE || !playerNickname || score === 0) return;
+  try {
+    await fetch(`${API_BASE}/scores`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ nickname: playerNickname, score })
+    });
+  } catch (e) { /* non-fatal — game works without API */ }
+}
+
+async function fetchLeaderboard() {
+  if (!API_BASE) return;
+  try {
+    const res  = await fetch(`${API_BASE}/leaderboard`);
+    leaderboardData = await res.json();
+  } catch (e) { leaderboardData = []; }
+}
+
+// Show nickname overlay if player hasn't set a name yet
+function showNicknameOverlay(onConfirm) {
+  const overlay = document.getElementById('nicknameOverlay');
+  const input   = document.getElementById('nicknameInput');
+  const btn     = document.getElementById('nicknameBtn');
+
+  input.value = playerNickname;
+  overlay.classList.add('visible');
+  input.focus();
+
+  function confirm() {
+    const nick = input.value.replace(/[^\x20-\x7E]/g, '').trim().slice(0, 12) || 'ANON';
+    playerNickname = nick.toUpperCase();
+    saveNickname(playerNickname);
+    overlay.classList.remove('visible');
+    onConfirm();
+  }
+
+  btn.onclick = confirm;
+  input.onkeydown = (e) => { if (e.key === 'Enter') confirm(); };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 9c. ANALYTICS TRACKER
+// ═══════════════════════════════════════════════════════════════
+
+const _analytics = {
+  queue:       [],   // buffered events waiting to flush
+  sessionStart: 0    // performance.now() at game_start
+};
+
+// Track an event — queued and flushed in batch on game_over or page unload
+function trackEvent(type, extras = {}) {
+  if (!API_BASE) return;
+  _analytics.queue.push({
+    type,
+    nickname: playerNickname || null,
+    score:    scoreState ? scoreState.score : null,
+    ...extras
+  });
+}
+
+// Flush the queue to POST /events (fire-and-forget)
+function flushAnalytics() {
+  if (!API_BASE || _analytics.queue.length === 0) return;
+  const batch = _analytics.queue.splice(0);
+  // Use sendBeacon when available (survives page unload)
+  const payload = JSON.stringify({ events: batch });
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon(`${API_BASE}/events`, new Blob([payload], { type: 'application/json' }));
+  } else {
+    fetch(`${API_BASE}/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      keepalive: true
+    }).catch(() => {});
+  }
+}
+
+// ─── Crash reporting ─────────────────────────────────────────
+window.onerror = (msg, src, line, col, err) => {
+  if (!API_BASE) return;
+  const meta = JSON.stringify({ msg: String(msg).slice(0, 200), src, line, col });
+  fetch(`${API_BASE}/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ events: [{ type: 'crash', nickname: playerNickname || null, meta }] })
+  }).catch(() => {});
+};
+
+window.addEventListener('unhandledrejection', (e) => {
+  if (!API_BASE) return;
+  const meta = JSON.stringify({ msg: String(e.reason).slice(0, 200) });
+  fetch(`${API_BASE}/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ events: [{ type: 'crash', nickname: playerNickname || null, meta }] })
+  }).catch(() => {});
+});
+
+// Flush on page unload
+window.addEventListener('pagehide', flushAnalytics);
+window.addEventListener('visibilitychange', () => {
+  if (document.hidden) flushAnalytics();
+});
 
 // ═══════════════════════════════════════════════════════════════
 // 10. COLLISION
@@ -678,10 +865,13 @@ function circleRectOverlap(cx, cy, r, rx, ry, rw, rh) {
   return dx * dx + dy * dy < r * r;
 }
 
-function checkBoundaries() {
-  const { cy, r } = ghostyCircle();
-  if (cy + r >= CONFIG.canvasHeight) { triggerGameOver(); return; }
-  if (cy - r <= 0)                   { triggerGameOver(); return; }
+// Per-tick cached hitbox — computed once in checkCollisions, reused by both checks
+let _cachedCircle = { cx: 0, cy: 0, r: 0 };
+
+function checkBoundaries(circle) {
+  const { cy, r } = circle;
+  if (cy + r >= CONFIG.canvasHeight) { trackEvent('boundary_hit', { meta: '{"side":"ground"}' }); triggerGameOver(); return; }
+  if (cy - r <= 0)                   { trackEvent('boundary_hit', { meta: '{"side":"ceiling"}' }); triggerGameOver(); return; }
 }
 
 function triggerPipeCollision() {
@@ -689,12 +879,18 @@ function triggerPipeCollision() {
   ghosty.invincibleTimer = CONFIG.invincibilityMs;
   ghosty.flashVisible    = true;
   triggerShake();
+  trackEvent('pipe_hit');
 }
 
 function checkCollisions() {
-  checkBoundaries();
+  _cachedCircle.cx = ghosty.x + ghosty.width  / 2;
+  _cachedCircle.cy = ghosty.y + ghosty.height / 2;
+  _cachedCircle.r  = CONFIG.hitboxRadius;
+
+  checkBoundaries(_cachedCircle);
   if (ghosty.isInvincible) return;
-  const { cx, cy, r } = ghostyCircle();
+
+  const { cx, cy, r } = _cachedCircle;
   for (const pipe of pipeState.pipes) {
     if (!pipe.active) continue;
     // Broad-phase: skip pipes outside Ghosty's x range
@@ -791,16 +987,8 @@ function applyShake(ctx) {
 // ─── BACKGROUND ──────────────────────────────────────────────
 
 function renderBackground() {
-  // Sky gradient — shifts red during impossible mode
-  const grad = ctx.createLinearGradient(0, 0, 0, CONFIG.canvasHeight);
-  if (impossibleMode.active) {
-    grad.addColorStop(0, '#8B2020');
-    grad.addColorStop(1, '#5C1A1A');
-  } else {
-    grad.addColorStop(0, '#87CEEB');
-    grad.addColorStop(1, '#5BA3C9');
-  }
-  ctx.fillStyle = grad;
+  // Sky gradient — cached, only rebuilt when impossible mode toggles
+  ctx.fillStyle = getSkyGradient();
   ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
 
   // Sketchy texture: pre-generated thin semi-transparent lines
@@ -898,7 +1086,7 @@ function renderPipes() {
     if (pipe.hasGate && !pipe.gatePassed) {
       const gateCx = pipe.x + CONFIG.pipeWidth / 2;
       const gateX  = gateCx - CONFIG.gateWidth / 2;
-      const pulse  = 0.6 + 0.4 * Math.sin(Date.now() / 150);
+      const pulse  = 0.6 + 0.4 * Math.sin(frameTime / 150);
       ctx.save();
       ctx.globalAlpha = pulse;
       ctx.shadowColor = '#ff0000';
@@ -1003,7 +1191,7 @@ function renderHUD() {
   // Impossible mode countdown — top-left corner
   if (impossibleMode.active) {
     const secsLeft = Math.ceil(impossibleMode.timer / 1000);
-    const pulse    = 0.7 + 0.3 * Math.sin(Date.now() / 200);
+    const pulse    = 0.7 + 0.3 * Math.sin(frameTime / 200);
 
     ctx.fillStyle = `rgba(180, 0, 0, ${0.55 * pulse})`;
     ctx.fillRect(0, 0, 130, 36);
@@ -1127,6 +1315,19 @@ function renderGameOverOverlay() {
 
   ctx.fillStyle = '#aaaaaa';
   ctx.fillText('SPACE/TAP to play again', cx, cy + (isNewBest ? 60 : 40));
+
+  // Top 3 leaderboard (if data available)
+  if (leaderboardData.length > 0) {
+    const top3 = leaderboardData.slice(0, 3);
+    const startY = cy + (isNewBest ? 95 : 75);
+    ctx.font      = '7px "Press Start 2P", monospace';
+    ctx.fillStyle = '#888888';
+    ctx.fillText('TOP SCORES', cx, startY);
+    top3.forEach((entry, i) => {
+      ctx.fillStyle = i === 0 ? '#ffe066' : '#aaaaaa';
+      ctx.fillText(`${i + 1}. ${entry.nickname}  ${entry.score}`, cx, startY + 16 + i * 14);
+    });
+  }
 }
 
 // ─── MAIN RENDER ─────────────────────────────────────────────
@@ -1261,12 +1462,35 @@ function triggerGameOver() {
 // ═══════════════════════════════════════════════════════════════
 
 const FIXED_STEP = 1000 / TARGET_FPS;
-let accumulator = 0;
-let lastTime    = 0;
-let rafId       = null;
-let shakeFrames = 0;
+let accumulator  = 0;
+let lastTime     = 0;
+let rafId        = null;
+let shakeFrames  = 0;
+let frameTime    = 0; // current RAF timestamp — use instead of Date.now() in render
+
+// ─── CACHED RENDER RESOURCES ─────────────────────────────────
+// Sky gradients cached once — recreated only when impossible mode toggles
+let _skyGradCache      = null;
+let _skyGradImpossible = false;
+
+function getSkyGradient() {
+  const isImpossible = impossibleMode.active;
+  if (!_skyGradCache || _skyGradImpossible !== isImpossible) {
+    _skyGradImpossible = isImpossible;
+    _skyGradCache = ctx.createLinearGradient(0, 0, 0, CONFIG.canvasHeight);
+    if (isImpossible) {
+      _skyGradCache.addColorStop(0, '#8B2020');
+      _skyGradCache.addColorStop(1, '#5C1A1A');
+    } else {
+      _skyGradCache.addColorStop(0, '#87CEEB');
+      _skyGradCache.addColorStop(1, '#5BA3C9');
+    }
+  }
+  return _skyGradCache;
+}
 
 function loop(timestamp) {
+  frameTime = timestamp;
   const dt = Math.min(timestamp - lastTime, 100); // cap at 100ms — prevents spiral of death
   lastTime = timestamp;
   accumulator += dt;
@@ -1303,7 +1527,14 @@ function stopLoop() {
 
 function onFlapInput() {
   if (gameState === 'PLAYING')   { applyFlap(); return; }
-  if (gameState === 'MENU')      { setState('PLAYING'); return; }
+  if (gameState === 'MENU') {
+    if (!playerNickname) {
+      showNicknameOverlay(() => setState('PLAYING'));
+    } else {
+      setState('PLAYING');
+    }
+    return;
+  }
   if (gameState === 'GAME_OVER') { setState('PLAYING'); return; }
 }
 
@@ -1385,6 +1616,7 @@ function applyFlap() {
   ghosty.squashY    = CONFIG.flapSquashY;
   ghosty.squashTimer = CONFIG.flapSquashFrames;
   playSound(assets.jumpSound);
+  trackEvent('flap');
 }
 
 function updateHighScore() {
@@ -1392,6 +1624,14 @@ function updateHighScore() {
     scoreState.highScore = scoreState.score;
     saveHighScore(scoreState.highScore);
   }
+  // Track game_over with session duration
+  const sessionMs = Math.round(performance.now() - (_analytics.sessionStart || performance.now()));
+  trackEvent('game_over', { value: sessionMs });
+  flushAnalytics();
+  // Submit to global leaderboard (fire-and-forget)
+  submitScore(scoreState.score);
+  // Refresh leaderboard for display on game over screen
+  fetchLeaderboard();
 }
 
 function triggerShake() {
@@ -1413,6 +1653,15 @@ function init() {
 }
 
 init();
+
+// ─── SERVICE WORKER REGISTRATION ─────────────────────────────
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // SW registration failure is non-fatal — game works without it
+    });
+  });
+}
   </script>
 </body>
 </html>

@@ -3,7 +3,8 @@ import * as fc from 'fast-check';
 import {
   CONFIG,
   ghostyCircleFromState,
-  circleRectOverlap
+  circleRectOverlap,
+  simulateInvincibilityExpiry
 } from '../game-logic.js';
 
 describe('Rendering property tests', () => {
@@ -35,9 +36,10 @@ describe('Rendering property tests', () => {
     );
   });
 
-  it('Property 11: Collision triggers game over — circleRectOverlap returns true for overlapping, false for non-overlapping', () => {
+  it('Property 11: Collision triggers game over — circleRectOverlap returns true for overlapping, false for non-overlapping; invincibility expires to GAME_OVER', () => {
     // Feature: flappy-kiro, Property 11: Collision triggers game over after invincibility
-    // Test overlapping case: circle centre inside rect
+
+    // Part A: overlapping circle (centre inside rect) always detected
     fc.assert(
       fc.property(
         fc.integer({ min: 10, max: 400 }),
@@ -46,7 +48,6 @@ describe('Rendering property tests', () => {
         fc.integer({ min: 50, max: 200 }),
         fc.integer({ min: 5, max: 20 }),
         (rx, ry, rw, rh, r) => {
-          // Circle centre at the middle of the rect — guaranteed overlap
           const cx = rx + rw / 2;
           const cy = ry + rh / 2;
           return circleRectOverlap(cx, cy, r, rx, ry, rw, rh) === true;
@@ -55,7 +56,7 @@ describe('Rendering property tests', () => {
       { numRuns: 100 }
     );
 
-    // Test non-overlapping case: circle far to the left of rect
+    // Part B: non-overlapping circle (far left of rect) never detected
     fc.assert(
       fc.property(
         fc.integer({ min: 200, max: 400 }),
@@ -64,10 +65,23 @@ describe('Rendering property tests', () => {
         fc.integer({ min: 50, max: 100 }),
         fc.integer({ min: 1, max: 10 }),
         (rx, ry, rw, rh, r) => {
-          // Circle centre far to the left — no overlap
           const cx = rx - r - 50;
           const cy = ry + rh / 2;
           return circleRectOverlap(cx, cy, r, rx, ry, rw, rh) === false;
+        }
+      ),
+      { numRuns: 100 }
+    );
+
+    // Part C: after a collision, invincibility is set for CONFIG.invincibilityMs (500 ms)
+    // and once it expires the game state must become GAME_OVER
+    fc.assert(
+      fc.property(
+        // vary the fixed step slightly around 1000/60 to cover rounding edge cases
+        fc.double({ min: 14, max: 18, noNaN: true }),
+        (fixedStep) => {
+          const result = simulateInvincibilityExpiry(CONFIG.invincibilityMs, fixedStep);
+          return result.isInvincible === false && result.gameState === 'GAME_OVER';
         }
       ),
       { numRuns: 100 }

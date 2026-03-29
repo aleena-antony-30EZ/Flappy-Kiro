@@ -1,12 +1,16 @@
 {
   "name": "flappy-kiro",
   "version": "1.0.0",
+  "type": "module",
   "description": "Flappy Kiro browser game",
   "scripts": {
-    "test": "vitest --run"
+    "test": "vitest --run",
+    "build": "node build.js",
+    "build:vercel": "npm run build"
   },
   "devDependencies": {
     "vitest": "^1.6.0",
-    "fast-check": "^3.19.0"
+    "fast-check": "^3.19.0",
+    "html-minifier-terser": "^7.2.0"
   }
 }
