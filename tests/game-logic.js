@@ -105,8 +105,9 @@ export function physicsTickPosition(y, vy) {
   return y + vy;
 }
 
-export function applyFlapVelocity(flapVelocity) {
-  return flapVelocity;
+// Returns CONFIG.flapVelocity unconditionally — flap overrides any prior vy.
+export function applyFlapVelocity(_currentVy) {
+  return CONFIG.flapVelocity;
 }
 
 // ─── Collision ───────────────────────────────────────────────

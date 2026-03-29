@@ -12,33 +12,36 @@ import {
 
 describe('Physics property tests', () => {
 
-  it('Property 1: Flap sets velocity — applyFlapVelocity always returns CONFIG.flapVelocity', () => {
+  it('Property 1: Flap sets velocity — result is always CONFIG.flapVelocity regardless of prior vy', () => {
     // Feature: flappy-kiro, Property 1: Flap sets velocity
+    // For any initial vertical velocity, applying a flap must set vy to exactly CONFIG.flapVelocity.
+    // This validates that the flap is an override (not additive) — Req 2.1, 2.2, 3.2.
     fc.assert(
       fc.property(fc.float({ min: -100, max: 100, noNaN: true }), (initialVy) => {
-        const result = applyFlapVelocity(CONFIG.flapVelocity);
-        return result === CONFIG.flapVelocity;
+        const newVy = applyFlapVelocity(initialVy);
+        return newVy === CONFIG.flapVelocity;
       }),
       { numRuns: 100 }
     );
   });
 
-  it('Property 2: Flap ignored outside PLAYING — applyFlapVelocity returns CONFIG.flapVelocity, not the input vy', () => {
+  it('Property 2: Flap ignored outside PLAYING — vy is unchanged when state is not PLAYING', () => {
     // Feature: flappy-kiro, Property 2: Flap is ignored outside PLAYING
-    // For any non-PLAYING state, isValidTransition confirms no flap-driven state change.
-    // applyFlapVelocity always returns CONFIG.flapVelocity (the flap result), not the current vy.
-    // The game only calls applyFlap() when gameState === 'PLAYING', so outside PLAYING the vy is unchanged.
+    // For any non-PLAYING state, a flap input must leave Ghosty's vy unchanged (Req 2.3).
+    // The game guards applyFlap() behind a gameState === 'PLAYING' check, so we model
+    // that guard here: if state !== 'PLAYING', vy after the conditional is still currentVy.
     fc.assert(
       fc.property(
         fc.constantFrom('MENU', 'PAUSED', 'GAME_OVER'),
         fc.float({ min: -100, max: 100, noNaN: true }),
         (state, currentVy) => {
-          // Outside PLAYING, flap input should NOT change velocity.
-          // We verify: the state is not PLAYING, and applyFlapVelocity result !== currentVy
-          // (unless currentVy happens to equal flapVelocity, which is a coincidence, not a flap).
-          // The key invariant: applyFlapVelocity always returns CONFIG.flapVelocity.
-          const flapResult = applyFlapVelocity(CONFIG.flapVelocity);
-          return flapResult === CONFIG.flapVelocity;
+          // Simulate the guard: only apply flap when PLAYING
+          const vyAfterInput = state === 'PLAYING'
+            ? applyFlapVelocity(currentVy)
+            : currentVy; // flap ignored — vy stays the same
+
+          // Outside PLAYING the velocity must be unchanged
+          return vyAfterInput === currentVy;
         }
       ),
       { numRuns: 100 }

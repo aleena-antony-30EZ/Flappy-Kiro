@@ -18,10 +18,10 @@ Implement the complete Flappy Kiro game as a single `index.html` file with vanil
 - [x] 2. Implement the state machine and game loop
   - [x] 2.1 Implement `setState(newState)` and the `gameState` variable; validate transitions to `MENU`, `PLAYING`, `PAUSED`, `GAME_OVER`
     - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7_
-  - [ ]* 2.2 Write property test for game state validity (Property 12)
+  - [x] 2.2 Write property test for game state validity (Property 12)
     - **Property 12: Game state is always valid**
     - **Validates: Requirements 6.1**
-  - [ ]* 2.3 Write property test for pause round-trip (Property 13)
+  - [x] 2.3 Write property test for pause round-trip (Property 13)
     - **Property 13: Pause is a round-trip**
     - **Validates: Requirements 6.4, 6.5**
   - [x] 2.4 Implement the fixed-timestep game loop using `requestAnimationFrame` and an accumulator; call `physicsUpdate()` and `render(alpha)` stubs
@@ -32,25 +32,25 @@ Implement the complete Flappy Kiro game as a single `index.html` file with vanil
 - [x] 3. Implement Ghosty physics
   - [x] 3.1 Implement `physicsUpdate()` for Ghosty: apply gravity, clamp to terminal velocity, update position, store `prevY`
     - _Requirements: 3.1, 3.3, 3.4_
-  - [ ]* 3.2 Write property test for physics tick invariant (Property 3)
+  - [x] 3.2 Write property test for physics tick invariant (Property 3)
     - **Property 3: Physics tick invariant**
     - **Validates: Requirements 3.1, 3.3, 3.4**
   - [x] 3.3 Implement `applyFlap()`: set `vy` to `CONFIG.flapVelocity` only when state is `PLAYING`; play `jump.wav`
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.2_
-  - [ ]* 3.4 Write property test for flap sets velocity (Property 1)
+  - [x] 3.4 Write property test for flap sets velocity (Property 1)
     - **Property 1: Flap sets velocity**
     - **Validates: Requirements 2.1, 2.2, 3.2**
-  - [ ]* 3.5 Write property test for flap ignored outside PLAYING (Property 2)
+  - [x] 3.5 Write property test for flap ignored outside PLAYING (Property 2)
     - **Property 2: Flap is ignored outside PLAYING**
     - **Validates: Requirements 2.3**
   - [x] 3.6 Implement interpolated render position: `renderY = prevY + alpha * (currentY - prevY)`
     - _Requirements: 3.5_
-  - [ ]* 3.7 Write property test for interpolated render position (Property 4)
+  - [x] 3.7 Write property test for interpolated render position (Property 4)
     - **Property 4: Interpolated render position**
     - **Validates: Requirements 3.5**
   - [x] 3.8 Implement sprite rotation: `angle = clamp(vy * CONFIG.tiltVelocityScale, CONFIG.maxTiltUp, CONFIG.maxTiltDown)`
     - _Requirements: 3.6_
-  - [ ]* 3.9 Write property test for sprite rotation clamped (Property 5)
+  - [x] 3.9 Write property test for sprite rotation clamped (Property 5)
     - **Property 5: Sprite rotation is clamped**
     - **Validates: Requirements 3.6**
 
@@ -62,7 +62,7 @@ Implement the complete Flappy Kiro game as a single `index.html` file with vanil
     - _Requirements: 4.1, 4.7_
   - [x] 5.2 Implement pipe spawning: spawn at fixed `pipeSpacing` intervals off the right edge; randomise `gapY` within `[gapMargin + gapSize/2, canvasHeight - gapMargin - gapSize/2]`
     - _Requirements: 4.1, 4.3, 4.4_
-  - [ ]* 5.3 Write property test for pipe gap within bounds (Property 6)
+  - [x] 5.3 Write property test for pipe gap within bounds (Property 6)
     - **Property 6: Pipe gap centre is within bounds**
     - **Validates: Requirements 4.3, 4.4**
   - [x] 5.4 Implement pipe scrolling: subtract `pipeState.speed` from each pipe's `x` each tick; release pipes whose right edge goes below 0

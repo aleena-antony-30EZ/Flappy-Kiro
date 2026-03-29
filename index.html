@@ -110,9 +110,19 @@ const CONFIG = {
 
   // Clouds
   cloudLayers: [
-    { speed: 18 / TARGET_FPS, opacity: 0.25 },  // far layer: 0.3 px/frame
-    { speed: 42 / TARGET_FPS, opacity: 0.55 }   // near layer: 0.7 px/frame
+    { speed: 12 / TARGET_FPS, opacity: 0.30 },  // far layer: slow, faint
+    { speed: 60 / TARGET_FPS, opacity: 0.65 }   // near layer: faster, more opaque
   ],
+
+  // Impossible mode
+  impossibleModeDuration: 10000,  // ms
+  gateWidth:              20,     // px — the red gate bar width
+  gateSpawnChance:        0.35,   // probability a pipe pair gets a gate
+
+  // Laser
+  laserCooldownMs:        20000,  // ms recharge time
+  laserBeamFrames:        12,     // frames the beam is visible
+  laserHoleRadius:        28,     // px radius of hole blasted in pipe
 
   // Debug
   debug: false
@@ -356,23 +366,26 @@ const pipeState = {
 (function initPipePool() {
   const poolSize = Math.ceil(CONFIG.canvasWidth / CONFIG.pipeSpacing) + 2;
   for (let i = 0; i < poolSize; i++) {
-    pipeState.pool.push({ x: 0, gapY: 0, scored: false, active: false });
+    pipeState.pool.push({ x: 0, gapY: 0, scored: false, active: false, hasGate: false, gatePassed: false, holes: [] });
   }
 })();
 
 function acquirePipe(x, gapY) {
   const p = pipeState.pool.find(p => !p.active);
   if (!p) return null; // pool exhausted (shouldn't happen with correct pool size)
-  p.x = x;
-  p.gapY = gapY;
-  p.scored = false;
-  p.active = true;
+  p.x          = x;
+  p.gapY       = gapY;
+  p.scored     = false;
+  p.active     = true;
+  p.hasGate    = Math.random() < CONFIG.gateSpawnChance;
+  p.gatePassed = false;
   pipeState.pipes.push(p);
   return p;
 }
 
 function releasePipe(p) {
   p.active = false;
+  p.holes  = [];
   const idx = pipeState.pipes.indexOf(p);
   if (idx !== -1) pipeState.pipes.splice(idx, 1);
 }
@@ -386,6 +399,21 @@ function checkScoring(pipe) {
     playScoreChime();
     spawnScorePopup();
   }
+
+  // Gate: check if Ghosty passes through the red gate bar
+  if (pipe.hasGate && !pipe.gatePassed) {
+    const gateCx = pipe.x + CONFIG.pipeWidth / 2;
+    if (ghosty.x + ghosty.width / 2 > gateCx) {
+      pipe.gatePassed = true;
+      // Only trigger if Ghosty is inside the gap (not hitting the pipes)
+      const { cy } = ghostyCircle();
+      const gapTop    = pipe.gapY - CONFIG.pipeGap / 2;
+      const gapBottom = pipe.gapY + CONFIG.pipeGap / 2;
+      if (cy > gapTop && cy < gapBottom) {
+        activateImpossibleMode();
+      }
+    }
+  }
 }
 
 function spawnScorePopup() {
@@ -394,6 +422,113 @@ function spawnScorePopup() {
     y:    ghosty.y,
     life: CONFIG.popupLife
   });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 6b. IMPOSSIBLE MODE
+// ═══════════════════════════════════════════════════════════════
+
+const impossibleMode = {
+  active:    false,
+  timer:     0       // ms remaining
+};
+
+function activateImpossibleMode() {
+  impossibleMode.active = true;
+  impossibleMode.timer  = CONFIG.impossibleModeDuration;
+}
+
+function updateImpossibleMode() {
+  if (!impossibleMode.active) return;
+  impossibleMode.timer -= 1000 / TARGET_FPS;
+  if (impossibleMode.timer <= 0) {
+    impossibleMode.active = false;
+    impossibleMode.timer  = 0;
+  }
+}
+
+function effectiveGravity() {
+  return impossibleMode.active ? -CONFIG.gravity : CONFIG.gravity;
+}
+
+function effectiveTerminalVelocity() {
+  // When gravity is reversed, terminal velocity caps upward speed
+  return impossibleMode.active ? -CONFIG.terminalVelocity : CONFIG.terminalVelocity;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 6c. LASER
+// ═══════════════════════════════════════════════════════════════
+
+const laser = {
+  cooldown:   0,      // ms remaining until ready (0 = ready)
+  beamFrames: 0,      // frames left to render the beam
+  beamY:      0       // Y position the beam was fired at
+};
+
+function fireLaser() {
+  if (gameState !== 'PLAYING') return;
+  if (laser.cooldown > 0) return;
+
+  laser.cooldown   = CONFIG.laserCooldownMs;
+  laser.beamFrames = CONFIG.laserBeamFrames;
+  laser.beamY      = ghosty.y + ghosty.height / 2;
+
+  // Blast holes in every active pipe the beam crosses
+  const beamY = laser.beamY;
+  for (const pipe of pipeState.pipes) {
+    if (!pipe.active) continue;
+    // Beam starts from Ghosty's right edge and goes to canvas right
+    if (pipe.x + CONFIG.pipeWidth < ghosty.x + ghosty.width) continue;
+    if (!pipe.holes) pipe.holes = [];
+    // Top pipe: hole if beam Y is within the top pipe body
+    const gapTop    = pipe.gapY - CONFIG.pipeGap / 2;
+    const gapBottom = pipe.gapY + CONFIG.pipeGap / 2;
+    if (beamY < gapTop) {
+      pipe.holes.push({ cy: beamY, r: CONFIG.laserHoleRadius, section: 'top' });
+    } else if (beamY > gapBottom) {
+      pipe.holes.push({ cy: beamY, r: CONFIG.laserHoleRadius, section: 'bottom' });
+    }
+  }
+
+  playLaserSound();
+}
+
+function updateLaser() {
+  if (laser.cooldown > 0) {
+    laser.cooldown = Math.max(0, laser.cooldown - 1000 / TARGET_FPS);
+  }
+  if (laser.beamFrames > 0) {
+    laser.beamFrames--;
+  }
+}
+
+function playLaserSound() {
+  try {
+    const actx = getAudioCtx();
+    const now  = actx.currentTime;
+    // Descending zap: 1200 Hz → 200 Hz over 0.3s
+    const osc  = actx.createOscillator();
+    const gain = actx.createGain();
+    osc.connect(gain);
+    gain.connect(actx.destination);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(1200, now);
+    osc.frequency.exponentialRampToValueAtTime(200, now + 0.3);
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+    osc.start(now);
+    osc.stop(now + 0.3);
+  } catch (e) {}
+}
+
+// Check if a circle hitbox overlaps a laser hole (used to skip collision in that region)
+function isInHole(cy, holes) {
+  if (!holes) return false;
+  for (const hole of holes) {
+    if (Math.abs(cy - hole.cy) < hole.r) return true;
+  }
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -565,6 +700,8 @@ function checkCollisions() {
     // Broad-phase: skip pipes outside Ghosty's x range
     if (pipe.x + CONFIG.pipeWidth < CONFIG.ghostX - CONFIG.hitboxRadius) continue;
     if (pipe.x > CONFIG.ghostX + CONFIG.ghostWidth + CONFIG.hitboxRadius) continue;
+    // Skip if Ghosty's centre is inside a laser hole on this pipe
+    if (isInHole(cy, pipe.holes)) continue;
     const rects = pipeRects(pipe);
     for (const rect of rects) {
       if (circleRectOverlap(cx, cy, r, rect.x, rect.y, rect.w, rect.h)) {
@@ -654,10 +791,15 @@ function applyShake(ctx) {
 // ─── BACKGROUND ──────────────────────────────────────────────
 
 function renderBackground() {
-  // Sky gradient
+  // Sky gradient — shifts red during impossible mode
   const grad = ctx.createLinearGradient(0, 0, 0, CONFIG.canvasHeight);
-  grad.addColorStop(0, '#87CEEB');
-  grad.addColorStop(1, '#5BA3C9');
+  if (impossibleMode.active) {
+    grad.addColorStop(0, '#8B2020');
+    grad.addColorStop(1, '#5C1A1A');
+  } else {
+    grad.addColorStop(0, '#87CEEB');
+    grad.addColorStop(1, '#5BA3C9');
+  }
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
 
@@ -697,10 +839,6 @@ function updateAndRenderClouds() {
 // ─── PIPES ───────────────────────────────────────────────────
 
 function renderPipes() {
-  ctx.fillStyle   = '#2d8a2d';
-  ctx.strokeStyle = '#1a5c1a';
-  ctx.lineWidth   = 2;
-
   for (let i = 0; i < pipeState.pipes.length; i++) {
     const pipe = pipeState.pipes[i];
     if (!pipe.active) continue;
@@ -709,21 +847,93 @@ function renderPipes() {
     const gapBottom = pipe.gapY + CONFIG.pipeGap / 2;
     const capX      = pipe.x - (CONFIG.pipeCapWidth - CONFIG.pipeWidth) / 2;
 
+    // Draw pipe into an offscreen canvas so we can punch holes with destination-out
+    ctx.save();
+
+    // Clip to this pipe's column so destination-out doesn't erase other things
+    ctx.beginPath();
+    ctx.rect(pipe.x - (CONFIG.pipeCapWidth - CONFIG.pipeWidth) / 2, 0,
+             CONFIG.pipeCapWidth, CONFIG.canvasHeight);
+    ctx.clip();
+
+    ctx.fillStyle   = '#2d8a2d';
+    ctx.strokeStyle = '#1a5c1a';
+    ctx.lineWidth   = 2;
+
     // Top pipe body
     ctx.fillRect(pipe.x, 0, CONFIG.pipeWidth, gapTop);
     ctx.strokeRect(pipe.x, 0, CONFIG.pipeWidth, gapTop);
-
-    // Top pipe cap (wider, at bottom of top pipe)
+    // Top pipe cap
     ctx.fillRect(capX, gapTop - CONFIG.pipeCapHeight, CONFIG.pipeCapWidth, CONFIG.pipeCapHeight);
     ctx.strokeRect(capX, gapTop - CONFIG.pipeCapHeight, CONFIG.pipeCapWidth, CONFIG.pipeCapHeight);
-
     // Bottom pipe body
     ctx.fillRect(pipe.x, gapBottom, CONFIG.pipeWidth, CONFIG.canvasHeight - gapBottom);
     ctx.strokeRect(pipe.x, gapBottom, CONFIG.pipeWidth, CONFIG.canvasHeight - gapBottom);
-
-    // Bottom pipe cap (wider, at top of bottom pipe)
+    // Bottom pipe cap
     ctx.fillRect(capX, gapBottom, CONFIG.pipeCapWidth, CONFIG.pipeCapHeight);
     ctx.strokeRect(capX, gapBottom, CONFIG.pipeCapWidth, CONFIG.pipeCapHeight);
+
+    // Punch laser holes
+    if (pipe.holes && pipe.holes.length > 0) {
+      ctx.globalCompositeOperation = 'destination-out';
+      for (const hole of pipe.holes) {
+        ctx.beginPath();
+        ctx.arc(pipe.x + CONFIG.pipeWidth / 2, hole.cy, hole.r, 0, Math.PI * 2);
+        ctx.fill();
+        // Scorch ring
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = 'rgba(255, 120, 0, 0.7)';
+        ctx.lineWidth   = 3;
+        ctx.beginPath();
+        ctx.arc(pipe.x + CONFIG.pipeWidth / 2, hole.cy, hole.r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalCompositeOperation = 'destination-out';
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    ctx.restore();
+
+    // Red gate bar across the gap
+    if (pipe.hasGate && !pipe.gatePassed) {
+      const gateCx = pipe.x + CONFIG.pipeWidth / 2;
+      const gateX  = gateCx - CONFIG.gateWidth / 2;
+      const pulse  = 0.6 + 0.4 * Math.sin(Date.now() / 150);
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.shadowColor = '#ff0000';
+      ctx.shadowBlur  = 12;
+      ctx.fillStyle   = '#ff2222';
+      ctx.fillRect(gateX, gapTop, CONFIG.gateWidth, CONFIG.pipeGap);
+      ctx.strokeStyle = '#ff8888';
+      ctx.lineWidth   = 1;
+      ctx.strokeRect(gateX, gapTop, CONFIG.gateWidth, CONFIG.pipeGap);
+      ctx.shadowBlur  = 0;
+      ctx.restore();
+    }
+  }
+
+  // Laser beam (rendered on top of pipes)
+  if (laser.beamFrames > 0) {
+    const alpha = laser.beamFrames / CONFIG.laserBeamFrames;
+    ctx.save();
+    ctx.globalAlpha  = alpha;
+    ctx.shadowColor  = '#00ffff';
+    ctx.shadowBlur   = 20;
+    ctx.strokeStyle  = '#ffffff';
+    ctx.lineWidth    = 4;
+    ctx.beginPath();
+    ctx.moveTo(ghosty.x + ghosty.width, laser.beamY);
+    ctx.lineTo(CONFIG.canvasWidth, laser.beamY);
+    ctx.stroke();
+    // Inner bright core
+    ctx.strokeStyle = '#00ffff';
+    ctx.lineWidth   = 2;
+    ctx.beginPath();
+    ctx.moveTo(ghosty.x + ghosty.width, laser.beamY);
+    ctx.lineTo(CONFIG.canvasWidth, laser.beamY);
+    ctx.stroke();
+    ctx.restore();
   }
 }
 
@@ -789,6 +999,54 @@ function renderHUD() {
   ctx.textBaseline = 'middle';
   ctx.fillStyle    = '#ffffff';
   ctx.fillText(formatHUD(scoreState.score, scoreState.highScore), CONFIG.canvasWidth / 2, hudY + hudH / 2);
+
+  // Impossible mode countdown — top-left corner
+  if (impossibleMode.active) {
+    const secsLeft = Math.ceil(impossibleMode.timer / 1000);
+    const pulse    = 0.7 + 0.3 * Math.sin(Date.now() / 200);
+
+    ctx.fillStyle = `rgba(180, 0, 0, ${0.55 * pulse})`;
+    ctx.fillRect(0, 0, 130, 36);
+
+    ctx.font         = '9px "Press Start 2P", monospace';
+    ctx.textAlign    = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle    = '#ff4444';
+    ctx.fillText('IMPOSSIBLE', 8, 12);
+    ctx.font      = '11px "Press Start 2P", monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`${secsLeft}s`, 8, 26);
+  }
+
+  // Laser cooldown — bottom-left corner
+  if (gameState === 'PLAYING' || gameState === 'PAUSED') {
+    const barW    = 120;
+    const barH    = 10;
+    const barX    = 8;
+    const barY    = CONFIG.canvasHeight - hudH - 28;
+    const ready   = laser.cooldown <= 0;
+    const fill    = ready ? 1 : 1 - laser.cooldown / CONFIG.laserCooldownMs;
+
+    // Background track
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+
+    // Fill bar
+    ctx.fillStyle = ready ? '#00ffff' : '#005577';
+    ctx.fillRect(barX, barY, barW * fill, barH);
+
+    // Label
+    ctx.font         = '7px "Press Start 2P", monospace';
+    ctx.textAlign    = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle    = ready ? '#00ffff' : '#aaaaaa';
+    if (ready) {
+      ctx.fillText('LASER READY  [F]', barX, barY - 7);
+    } else {
+      const secsLeft = Math.ceil(laser.cooldown / 1000);
+      ctx.fillText(`LASER  ${secsLeft}s`, barX, barY - 7);
+    }
+  }
 }
 
 // ─── OVERLAYS ────────────────────────────────────────────────
@@ -923,11 +1181,17 @@ function physicsUpdate() {
   }
 
   ghosty.prevY = ghosty.y;
-  ghosty.vy    = Math.min(ghosty.vy + CONFIG.gravity, CONFIG.terminalVelocity);
-  ghosty.y    += ghosty.vy;
+  const grav = effectiveGravity();
+  const term = effectiveTerminalVelocity();
+  ghosty.vy = impossibleMode.active
+    ? Math.max(ghosty.vy + grav, term)   // reversed: clamp upward
+    : Math.min(ghosty.vy + grav, term);  // normal: clamp downward
+  ghosty.y += ghosty.vy;
 
   updateSquash();
   updateInvincibility();
+  updateImpossibleMode();
+  updateLaser();
   updatePipes();
   checkCollisions();
   emitParticles();
@@ -1051,6 +1315,7 @@ function onPauseInput() {
 function onKeyDown(e) {
   if (e.code === 'Space')  { e.preventDefault(); onFlapInput(); }
   if (e.code === 'Escape') { onPauseInput(); }
+  if (e.code === 'KeyF')   { fireLaser(); }
 }
 
 function onCanvasClick()      { onFlapInput(); }
@@ -1103,6 +1368,15 @@ function resetGame() {
   particleCursor = 0;
   for (const p of particles) { p.active = false; }
   scorePopups.length = 0;
+
+  // Impossible mode
+  impossibleMode.active = false;
+  impossibleMode.timer  = 0;
+
+  // Laser
+  laser.cooldown   = 0;
+  laser.beamFrames = 0;
+  laser.beamY      = 0;
 }
 
 function applyFlap() {
