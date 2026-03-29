@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flappy Kiro</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #gameCanvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    #fatalError {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #1a1a2e;
+      color: #ff4444;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 16px;
+      text-align: center;
+      padding: 40px;
+      line-height: 2;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="fatalError"></div>
+
+  <script>
+// ═══════════════════════════════════════════════════════════════
+// 1. CONFIG
+// ═══════════════════════════════════════════════════════════════
+
+const TARGET_FPS = 60;
+
+const CONFIG = {
+  // Canvas
+  canvasWidth:        480,
+  canvasHeight:       640,
+
+  // Sky
+  skyColor:           '#87ceeb',
+
+  // Physics (converted from game-config.json real-world units)
+  gravity:            800  / (TARGET_FPS ** 2),   // 0.222 px/frame²
+  flapVelocity:      -300  / TARGET_FPS,           // -5 px/frame
+  terminalVelocity:   720  / TARGET_FPS,           // 12 px/frame
+  maxTiltUp:         -25,                          // degrees
+  maxTiltDown:        90,                          // degrees
+  tiltVelocityScale:  4,
+
+  // Ghosty
+  ghostWidth:         40,    // px
+  ghostHeight:        40,    // px
+  ghostX:             120,   // fixed horizontal position
+  hitboxRadius:       12,    // px (circle radius for collision)
+  hitboxInset:        4,     // px inset from sprite edge
+
+  // Pipes (converted from game-config.json)
+  pipeStartSpeed:     120 / TARGET_FPS,   // 2.0 px/frame
+  pipeSpacing:        350,                // px between leading edges
+  pipeGap:            140,                // px gap height
+  pipeWidth:          60,                 // px
+  pipeCapWidth:       72,                 // px
+  pipeCapHeight:      20,                 // px
+  gapMargin:          60,                 // min px from canvas edge
+  speedIncrement:     24  / TARGET_FPS,   // 0.4 px/frame per milestone
+  speedMilestone:     5,                  // pipes passed per speed step
+  maxSpeed:           360 / TARGET_FPS,   // 6.0 px/frame hard cap
+
+  // Collision
+  invincibilityMs:    500,
+  flashIntervalMs:    80,
+
+  // Particles
+  particlesPerFrame:  2,
+  particleLife:       20,    // frames
+  particleRadius:     3,     // px
+
+  // Screen shake
+  shakeFrames:        18,
+  shakeMagnitude:     6,     // max px offset
+
+  // Score popup
+  popupLife:          40,    // frames
+  popupRiseSpeed:     1,     // px/frame upward
+
+  // Pseudo-animation
+  idleBobAmplitude:   2,     // px
+  idleBobFrequency:   0.05,  // radians/frame
+  flapSquashX:        0.75,  // x scale on flap
+  flapSquashY:        1.25,  // y scale on flap
+  flapSquashFrames:   6,     // frames to lerp back to 1.0
+  deathSpinSpeed:     15,    // degrees/frame during death spin
+
+  // Clouds
+  cloudLayers: [
+    { speed: 18 / TARGET_FPS, opacity: 0.25 },  // far layer: 0.3 px/frame
+    { speed: 42 / TARGET_FPS, opacity: 0.55 }   // near layer: 0.7 px/frame
+  ],
+
+  // Debug
+  debug: false
+};
+
+// ═══════════════════════════════════════════════════════════════
+// 2. ASSET LOADER
+// ═══════════════════════════════════════════════════════════════
+
+const assets = {
+  ghosty:        null,   // HTMLImageElement or null (fallback to canvas draw)
+  jumpSound:     null,   // HTMLAudioElement
+  gameOverSound: null    // HTMLAudioElement
+};
+
+let ghostyImageFailed = false;
+
+function loadAssets() {
+  const promises = [];
+
+  // Load ghosty sprite
+  promises.push(new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { assets.ghosty = img; resolve(); };
+    img.onerror = () => {
+      console.warn('Failed to load assets/ghosty.png — using canvas fallback');
+      ghostyImageFailed = true;
+      resolve(); // non-fatal
+    };
+    img.src = 'assets/ghosty.png';
+  }));
+
+  // Load jump sound
+  promises.push(new Promise((resolve) => {
+    try {
+      const audio = new Audio();
+      audio.oncanplaythrough = () => { assets.jumpSound = audio; resolve(); };
+      audio.onerror = () => {
+        console.warn('Failed to load assets/jump.wav');
+        resolve(); // non-fatal
+      };
+      // Resolve after a short timeout even if canplaythrough never fires
+      audio.addEventListener('error', resolve);
+      audio.src = 'assets/jump.wav';
+      audio.load();
+      // Fallback resolve so we don't hang if the browser never fires canplaythrough
+      setTimeout(resolve, 2000);
+    } catch (e) {
+      console.warn('Audio not supported:', e);
+      resolve();
+    }
+  }));
+
+  // Load game over sound
+  promises.push(new Promise((resolve) => {
+    try {
+      const audio = new Audio();
+      audio.oncanplaythrough = () => { assets.gameOverSound = audio; resolve(); };
+      audio.onerror = () => {
+        console.warn('Failed to load assets/game_over.wav');
+        resolve(); // non-fatal
+      };
+      audio.addEventListener('error', resolve);
+      audio.src = 'assets/game_over.wav';
+      audio.load();
+      setTimeout(resolve, 2000);
+    } catch (e) {
+      console.warn('Audio not supported:', e);
+      resolve();
+    }
+  }));
+
+  return Promise.all(promises);
+}
+
+// ─── AUDIO ───────────────────────────────────────────────────
+
+function playSound(audio) {
+  if (!audio) return;
+  try { audio.cloneNode().play().catch(() => {}); } catch (e) {}
+}
+
+let audioCtx = null;
+
+function getAudioCtx() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  return audioCtx;
+}
+
+function playScoreChime() {
+  try {
+    const ctx = getAudioCtx();
+    const now = ctx.currentTime;
+
+    // Two-note ascending chime: C5 (523 Hz) → E5 (659 Hz)
+    [523.25, 659.25].forEach((freq, i) => {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + i * 0.08);
+
+      gain.gain.setValueAtTime(0.25, now + i * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.2);
+
+      osc.start(now + i * 0.08);
+      osc.stop(now  + i * 0.08 + 0.2);
+    });
+  } catch (e) { /* silence on AudioContext failure */ }
+}
+
+// ─── PERSISTENCE ─────────────────────────────────────────────
+
+function saveHighScore(score) {
+  try { localStorage.setItem('flappyKiroHigh', String(score)); } catch (e) {}
+}
+
+function loadHighScore() {
+  try { return parseInt(localStorage.getItem('flappyKiroHigh') || '0', 10); } catch (e) { return 0; }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 3. CANVAS SETUP
+// ═══════════════════════════════════════════════════════════════
+
+const canvas = document.getElementById('gameCanvas');
+canvas.width  = CONFIG.canvasWidth;
+canvas.height = CONFIG.canvasHeight;
+
+const ctx = canvas.getContext('2d');
+if (!ctx) {
+  const errEl = document.getElementById('fatalError');
+  errEl.style.display = 'block';
+  errEl.innerHTML = 'ERROR<br><br>Canvas 2D context is not supported<br>in this browser.<br><br>Please try a modern browser.';
+  canvas.style.display = 'none';
+  throw new Error('Canvas 2D context unavailable');
+}
+
+function resizeCanvas() {
+  const scale = Math.min(
+    window.innerWidth  / CONFIG.canvasWidth,
+    window.innerHeight / CONFIG.canvasHeight
+  );
+  canvas.style.width  = `${CONFIG.canvasWidth  * scale}px`;
+  canvas.style.height = `${CONFIG.canvasHeight * scale}px`;
+}
+
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// ═══════════════════════════════════════════════════════════════
+// 4. STATE MACHINE
+// ═══════════════════════════════════════════════════════════════
+
+let gameState = 'MENU'; // 'MENU' | 'PLAYING' | 'PAUSED' | 'GAME_OVER'
+
+const STATE_TRANSITIONS = {
+  'MENU':      ['PLAYING'],
+  'PLAYING':   ['PAUSED', 'GAME_OVER'],
+  'PAUSED':    ['PLAYING'],
+  'GAME_OVER': ['PLAYING']
+};
+
+function setState(newState) {
+  const allowed = STATE_TRANSITIONS[gameState];
+  if (!allowed || !allowed.includes(newState)) {
+    console.warn(`Invalid transition: ${gameState} → ${newState}`);
+    return;
+  }
+  gameState = newState;
+  onStateEnter(newState);
+}
+
+function onStateEnter(state) {
+  if (state === 'PLAYING')   { onEnterPlaying(); }
+  if (state === 'GAME_OVER') { onEnterGameOver(); }
+  if (state === 'PAUSED')    { onEnterPaused(); }
+  if (state === 'MENU')      { onEnterMenu(); }
+}
+
+function onEnterPlaying() {
+  resetGame();
+  startLoop();
+}
+
+function onEnterGameOver() {
+  stopLoop();
+  updateHighScore();
+  playSound(assets.gameOverSound);
+  triggerShake();
+  render(1.0);
+}
+
+function onEnterPaused() {
+  stopLoop();
+}
+
+function onEnterMenu() {
+  stopLoop();
+  resetGame();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 5. GHOSTY  (stub — implemented in Task 3)
+// ═══════════════════════════════════════════════════════════════
+
+const ghosty = {
+  x:             CONFIG.ghostX,
+  y:             CONFIG.canvasHeight / 2,
+  prevY:         CONFIG.canvasHeight / 2,
+  vy:            0,
+  width:         CONFIG.ghostWidth,
+  height:        CONFIG.ghostHeight,
+  isInvincible:  false,
+  invincibleTimer: 0,
+  flashVisible:  true,
+  animFrame:     0,
+  squashX:       1.0,
+  squashY:       1.0,
+  squashTimer:   0,
+  deathAngle:    0
+};
+
+// ═══════════════════════════════════════════════════════════════
+// 6. PIPES
+// ═══════════════════════════════════════════════════════════════
+
+const pipeState = {
+  pipes:       [],
+  pool:        [],
+  speed:       CONFIG.pipeStartSpeed,
+  spawnTimer:  0,
+  pipesPassed: 0
+};
+
+// Initialise pool
+(function initPipePool() {
+  const poolSize = Math.ceil(CONFIG.canvasWidth / CONFIG.pipeSpacing) + 2;
+  for (let i = 0; i < poolSize; i++) {
+    pipeState.pool.push({ x: 0, gapY: 0, scored: false, active: false });
+  }
+})();
+
+function acquirePipe(x, gapY) {
+  const p = pipeState.pool.find(p => !p.active);
+  if (!p) return null; // pool exhausted (shouldn't happen with correct pool size)
+  p.x = x;
+  p.gapY = gapY;
+  p.scored = false;
+  p.active = true;
+  pipeState.pipes.push(p);
+  return p;
+}
+
+function releasePipe(p) {
+  p.active = false;
+  const idx = pipeState.pipes.indexOf(p);
+  if (idx !== -1) pipeState.pipes.splice(idx, 1);
+}
+
+function checkScoring(pipe) {
+  if (pipe.scored) return;
+  if (ghosty.x + ghosty.width / 2 > pipe.x + CONFIG.pipeWidth / 2) {
+    pipe.scored = true;
+    scoreState.score++;
+    pipeState.pipesPassed++;
+    playScoreChime();
+    spawnScorePopup();
+  }
+}
+
+function spawnScorePopup() {
+  scorePopups.push({
+    x:    ghosty.x + ghosty.width,
+    y:    ghosty.y,
+    life: CONFIG.popupLife
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 7. CLOUDS
+// ═══════════════════════════════════════════════════════════════
+
+const cloudLayers = CONFIG.cloudLayers.map(layer => ({
+  speed:   layer.speed,
+  opacity: layer.opacity,
+  clouds:  []
+}));
+
+// Pre-generate cloud sizes for each layer (4-6 clouds per layer)
+(function initClouds() {
+  const cloudDefs = [
+    // far layer: smaller, higher up
+    [
+      { w: 80,  h: 28, y: 60  },
+      { w: 110, h: 32, y: 100 },
+      { w: 70,  h: 24, y: 140 },
+      { w: 95,  h: 30, y: 80  },
+      { w: 60,  h: 22, y: 120 }
+    ],
+    // near layer: larger, lower
+    [
+      { w: 120, h: 38, y: 160 },
+      { w: 90,  h: 32, y: 200 },
+      { w: 140, h: 42, y: 130 },
+      { w: 100, h: 36, y: 240 },
+      { w: 80,  h: 28, y: 180 },
+      { w: 115, h: 40, y: 110 }
+    ]
+  ];
+
+  cloudLayers.forEach((layer, li) => {
+    const defs = cloudDefs[li];
+    defs.forEach((def, i) => {
+      layer.clouds.push({
+        x: (CONFIG.canvasWidth / defs.length) * i + Math.floor(i * 37 + li * 113) % 80,
+        y: def.y,
+        w: def.w,
+        h: def.h
+      });
+    });
+  });
+})();
+
+// ─── BACKGROUND TEXTURE ──────────────────────────────────────
+// Pre-generate sketchy texture lines (fixed pattern, not random each frame)
+const BG_TEXTURE_LINES = (function() {
+  const lines = [];
+  // Use a deterministic LCG to generate pseudo-random positions
+  let seed = 42;
+  function rand() {
+    seed = (seed * 1664525 + 1013904223) & 0xffffffff;
+    return (seed >>> 0) / 0xffffffff;
+  }
+  for (let i = 0; i < 15; i++) {
+    lines.push({
+      x1: rand() * CONFIG.canvasWidth,
+      y1: rand() * CONFIG.canvasHeight,
+      x2: rand() * CONFIG.canvasWidth,
+      y2: rand() * CONFIG.canvasHeight
+    });
+  }
+  return lines;
+})();
+
+// ═══════════════════════════════════════════════════════════════
+// 8. PARTICLES
+// ═══════════════════════════════════════════════════════════════
+
+const MAX_PARTICLES = CONFIG.particlesPerFrame * CONFIG.particleLife;
+const particles = new Array(MAX_PARTICLES).fill(null).map(() => ({ active: false, x: 0, y: 0, life: 0, maxLife: 0, r: 0 }));
+let particleCursor = 0;
+
+function emitParticle(x, y) {
+  const p = particles[particleCursor % MAX_PARTICLES];
+  p.active  = true;
+  p.x       = x;
+  p.y       = y;
+  p.life    = CONFIG.particleLife;
+  p.maxLife = CONFIG.particleLife;
+  p.r       = CONFIG.particleRadius;
+  particleCursor++;
+}
+
+function emitParticles() {
+  for (let i = 0; i < CONFIG.particlesPerFrame; i++) {
+    emitParticle(ghosty.x, ghosty.y + ghosty.height / 2);
+  }
+}
+
+function renderParticles() {
+  ctx.fillStyle = 'rgba(200, 220, 255, 1)';
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    const p = particles[i];
+    if (!p.active) continue;
+    const alpha = (p.life / p.maxLife) * 0.6;
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+    p.life--;
+    if (p.life <= 0) p.active = false;
+  }
+  ctx.globalAlpha = 1.0;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 9. SCORING
+// ═══════════════════════════════════════════════════════════════
+
+const scoreState = {
+  score:     0,
+  highScore: loadHighScore()
+};
+
+const scorePopups = [];
+
+// ═══════════════════════════════════════════════════════════════
+// 10. COLLISION
+// ═══════════════════════════════════════════════════════════════
+
+function ghostyCircle() {
+  return {
+    cx: ghosty.x + ghosty.width  / 2,
+    cy: ghosty.y + ghosty.height / 2,
+    r:  CONFIG.hitboxRadius
+  };
+}
+
+function pipeRects(pipe) {
+  const gapTop    = pipe.gapY - CONFIG.pipeGap / 2;
+  const gapBottom = pipe.gapY + CONFIG.pipeGap / 2;
+  return [
+    { x: pipe.x, y: 0,        w: CONFIG.pipeWidth, h: gapTop },
+    { x: pipe.x, y: gapBottom, w: CONFIG.pipeWidth, h: CONFIG.canvasHeight - gapBottom }
+  ];
+}
+
+function circleRectOverlap(cx, cy, r, rx, ry, rw, rh) {
+  const nearX = Math.max(rx, Math.min(cx, rx + rw));
+  const nearY = Math.max(ry, Math.min(cy, ry + rh));
+  const dx = cx - nearX;
+  const dy = cy - nearY;
+  return dx * dx + dy * dy < r * r;
+}
+
+function checkBoundaries() {
+  const { cy, r } = ghostyCircle();
+  if (cy + r >= CONFIG.canvasHeight) { triggerGameOver(); return; }
+  if (cy - r <= 0)                   { triggerGameOver(); return; }
+}
+
+function triggerPipeCollision() {
+  ghosty.isInvincible    = true;
+  ghosty.invincibleTimer = CONFIG.invincibilityMs;
+  ghosty.flashVisible    = true;
+  triggerShake();
+}
+
+function checkCollisions() {
+  checkBoundaries();
+  if (ghosty.isInvincible) return;
+  const { cx, cy, r } = ghostyCircle();
+  for (const pipe of pipeState.pipes) {
+    if (!pipe.active) continue;
+    // Broad-phase: skip pipes outside Ghosty's x range
+    if (pipe.x + CONFIG.pipeWidth < CONFIG.ghostX - CONFIG.hitboxRadius) continue;
+    if (pipe.x > CONFIG.ghostX + CONFIG.ghostWidth + CONFIG.hitboxRadius) continue;
+    const rects = pipeRects(pipe);
+    for (const rect of rects) {
+      if (circleRectOverlap(cx, cy, r, rect.x, rect.y, rect.w, rect.h)) {
+        triggerPipeCollision();
+        return;
+      }
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 11. RENDERER
+// ═══════════════════════════════════════════════════════════════
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
+
+// ─── PURE HELPERS ────────────────────────────────────────────
+
+function interpolateY(prevY, currentY, alpha) {
+  return prevY + alpha * (currentY - prevY);
+}
+
+function computeRotation(vy) {
+  return clamp(vy * CONFIG.tiltVelocityScale, CONFIG.maxTiltUp, CONFIG.maxTiltDown);
+}
+
+function drawRoundRect(ctx, x, y, w, h, r) {
+  if (ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y,     x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x,     y + h, r);
+    ctx.arcTo(x,     y + h, x,     y,     r);
+    ctx.arcTo(x,     y,     x + w, y,     r);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+function drawFallbackGhost(ctx, x, y, w, h) {
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  const r  = Math.min(w, h) / 2;
+
+  ctx.fillStyle = 'rgba(220, 220, 255, 0.9)';
+  ctx.strokeStyle = 'rgba(100, 100, 180, 0.8)';
+  ctx.lineWidth = 2;
+
+  ctx.beginPath();
+  ctx.arc(cx, cy - r * 0.1, r * 0.75, Math.PI, 0, false);
+  ctx.lineTo(cx + r * 0.75, cy + r * 0.65);
+  ctx.quadraticCurveTo(cx + r * 0.5,  cy + r * 0.35, cx + r * 0.25, cy + r * 0.65);
+  ctx.quadraticCurveTo(cx,             cy + r * 0.35, cx - r * 0.25, cy + r * 0.65);
+  ctx.quadraticCurveTo(cx - r * 0.5,  cy + r * 0.35, cx - r * 0.75, cy + r * 0.65);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#333';
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.25, cy - r * 0.15, r * 0.12, 0, Math.PI * 2);
+  ctx.arc(cx + r * 0.25, cy - r * 0.15, r * 0.12, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function formatHUD(score, highScore) {
+  return `Score: ${score} | High: ${highScore}`;
+}
+
+// ─── SCREEN SHAKE ────────────────────────────────────────────
+
+function applyShake(ctx) {
+  if (shakeFrames <= 0) return;
+  const mag = CONFIG.shakeMagnitude * (shakeFrames / CONFIG.shakeFrames);
+  ctx.translate(
+    (Math.random() * 2 - 1) * mag,
+    (Math.random() * 2 - 1) * mag
+  );
+  shakeFrames--;
+}
+
+// ─── BACKGROUND ──────────────────────────────────────────────
+
+function renderBackground() {
+  // Sky gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, CONFIG.canvasHeight);
+  grad.addColorStop(0, '#87CEEB');
+  grad.addColorStop(1, '#5BA3C9');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+
+  // Sketchy texture: pre-generated thin semi-transparent lines
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < BG_TEXTURE_LINES.length; i++) {
+    const l = BG_TEXTURE_LINES[i];
+    ctx.beginPath();
+    ctx.moveTo(l.x1, l.y1);
+    ctx.lineTo(l.x2, l.y2);
+    ctx.stroke();
+  }
+}
+
+// ─── CLOUDS ──────────────────────────────────────────────────
+
+function updateAndRenderClouds() {
+  ctx.fillStyle = '#ffffff';
+  for (let li = 0; li < cloudLayers.length; li++) {
+    const layer = cloudLayers[li];
+    ctx.globalAlpha = layer.opacity;
+    for (let ci = 0; ci < layer.clouds.length; ci++) {
+      const cloud = layer.clouds[ci];
+      // Scroll
+      cloud.x -= layer.speed;
+      // Wrap
+      if (cloud.x + cloud.w < 0) {
+        cloud.x = CONFIG.canvasWidth + cloud.w;
+      }
+      drawRoundRect(ctx, cloud.x, cloud.y, cloud.w, cloud.h, 12);
+    }
+  }
+  ctx.globalAlpha = 1.0;
+}
+
+// ─── PIPES ───────────────────────────────────────────────────
+
+function renderPipes() {
+  ctx.fillStyle   = '#2d8a2d';
+  ctx.strokeStyle = '#1a5c1a';
+  ctx.lineWidth   = 2;
+
+  for (let i = 0; i < pipeState.pipes.length; i++) {
+    const pipe = pipeState.pipes[i];
+    if (!pipe.active) continue;
+
+    const gapTop    = pipe.gapY - CONFIG.pipeGap / 2;
+    const gapBottom = pipe.gapY + CONFIG.pipeGap / 2;
+    const capX      = pipe.x - (CONFIG.pipeCapWidth - CONFIG.pipeWidth) / 2;
+
+    // Top pipe body
+    ctx.fillRect(pipe.x, 0, CONFIG.pipeWidth, gapTop);
+    ctx.strokeRect(pipe.x, 0, CONFIG.pipeWidth, gapTop);
+
+    // Top pipe cap (wider, at bottom of top pipe)
+    ctx.fillRect(capX, gapTop - CONFIG.pipeCapHeight, CONFIG.pipeCapWidth, CONFIG.pipeCapHeight);
+    ctx.strokeRect(capX, gapTop - CONFIG.pipeCapHeight, CONFIG.pipeCapWidth, CONFIG.pipeCapHeight);
+
+    // Bottom pipe body
+    ctx.fillRect(pipe.x, gapBottom, CONFIG.pipeWidth, CONFIG.canvasHeight - gapBottom);
+    ctx.strokeRect(pipe.x, gapBottom, CONFIG.pipeWidth, CONFIG.canvasHeight - gapBottom);
+
+    // Bottom pipe cap (wider, at top of bottom pipe)
+    ctx.fillRect(capX, gapBottom, CONFIG.pipeCapWidth, CONFIG.pipeCapHeight);
+    ctx.strokeRect(capX, gapBottom, CONFIG.pipeCapWidth, CONFIG.pipeCapHeight);
+  }
+}
+
+// ─── GHOSTY ──────────────────────────────────────────────────
+
+function renderGhosty(alpha) {
+  if (!ghosty.flashVisible) return;
+
+  const renderY   = interpolateY(ghosty.prevY, ghosty.y, alpha);
+  const bobOffset = (gameState === 'MENU')
+    ? Math.sin(ghosty.animFrame * CONFIG.idleBobFrequency) * CONFIG.idleBobAmplitude
+    : 0;
+
+  let tiltDeg = computeRotation(ghosty.vy);
+  if (gameState === 'GAME_OVER') {
+    tiltDeg += ghosty.deathAngle;
+  }
+  const tiltRad = tiltDeg * Math.PI / 180;
+
+  ctx.save();
+  ctx.translate(ghosty.x + ghosty.width / 2, renderY + ghosty.height / 2 + bobOffset);
+  ctx.rotate(tiltRad);
+  ctx.scale(ghosty.squashX, ghosty.squashY);
+
+  if (assets.ghosty && !ghostyImageFailed) {
+    ctx.drawImage(assets.ghosty, -ghosty.width / 2, -ghosty.height / 2, ghosty.width, ghosty.height);
+  } else {
+    drawFallbackGhost(ctx, -ghosty.width / 2, -ghosty.height / 2, ghosty.width, ghosty.height);
+  }
+  ctx.restore();
+}
+
+// ─── SCORE POPUPS ────────────────────────────────────────────
+
+function renderScorePopups() {
+  ctx.font      = '12px "Press Start 2P", monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (let i = scorePopups.length - 1; i >= 0; i--) {
+    const popup = scorePopups[i];
+    ctx.globalAlpha = popup.life / CONFIG.popupLife;
+    ctx.fillStyle   = '#ffe066';
+    ctx.fillText('+1', popup.x, popup.y);
+    popup.y    -= CONFIG.popupRiseSpeed;
+    popup.life--;
+    if (popup.life <= 0) scorePopups.splice(i, 1);
+  }
+  ctx.globalAlpha = 1.0;
+}
+
+// ─── HUD ─────────────────────────────────────────────────────
+
+function renderHUD() {
+  const hudH = 30;
+  const hudY = CONFIG.canvasHeight - hudH;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.fillRect(0, hudY, CONFIG.canvasWidth, hudH);
+
+  ctx.font         = '10px "Press Start 2P", monospace';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle    = '#ffffff';
+  ctx.fillText(formatHUD(scoreState.score, scoreState.highScore), CONFIG.canvasWidth / 2, hudY + hudH / 2);
+}
+
+// ─── OVERLAYS ────────────────────────────────────────────────
+
+function renderMenuOverlay() {
+  const cx = CONFIG.canvasWidth / 2;
+
+  // Title box
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+  ctx.fillRect(cx - 160, 150, 320, 64);
+  ctx.font         = '20px "Press Start 2P", monospace';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle    = '#ffffff';
+  ctx.fillText('FLAPPY KIRO', cx, 182);
+
+  // Prompt box
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.fillRect(cx - 160, 370, 320, 72);
+  ctx.font      = '11px "Press Start 2P", monospace';
+  ctx.fillStyle = '#ffe066';
+  ctx.fillText('PRESS SPACE / TAP', cx, 396);
+  ctx.fillText('TO PLAY', cx, 424);
+
+  // High score
+  ctx.font      = '10px "Press Start 2P", monospace';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(`High Score: ${scoreState.highScore}`, cx, 480);
+}
+
+function renderPausedOverlay() {
+  const cx = CONFIG.canvasWidth / 2;
+  const cy = CONFIG.canvasHeight / 2;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.fillRect(cx - 150, cy - 90, 300, 180);
+
+  ctx.font         = '18px "Press Start 2P", monospace';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle    = '#ffffff';
+  ctx.fillText('PAUSED', cx, cy - 50);
+
+  ctx.font      = '10px "Press Start 2P", monospace';
+  ctx.fillStyle = '#cccccc';
+  ctx.fillText(`Score: ${scoreState.score}`, cx, cy);
+  ctx.fillText('ESC to resume', cx, cy + 40);
+}
+
+function renderGameOverOverlay() {
+  const cx = CONFIG.canvasWidth / 2;
+  const cy = CONFIG.canvasHeight / 2;
+
+  const isNewBest = scoreState.score > 0 && scoreState.score >= scoreState.highScore;
+  const boxH = isNewBest ? 240 : 210;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+  ctx.fillRect(cx - 160, cy - 120, 320, boxH);
+
+  ctx.font         = '18px "Press Start 2P", monospace';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle    = '#ff4444';
+  ctx.fillText('GAME OVER', cx, cy - 80);
+
+  ctx.font      = '10px "Press Start 2P", monospace';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(`Score: ${scoreState.score}`, cx, cy - 40);
+  ctx.fillText(`Best:  ${scoreState.highScore}`, cx, cy - 10);
+
+  if (isNewBest) {
+    ctx.fillStyle = '#ffe066';
+    ctx.fillText('\u2605 NEW BEST! \u2605', cx, cy + 25);
+  }
+
+  ctx.fillStyle = '#aaaaaa';
+  ctx.fillText('SPACE/TAP to play again', cx, cy + (isNewBest ? 60 : 40));
+}
+
+// ─── MAIN RENDER ─────────────────────────────────────────────
+
+function render(alpha) {
+  // World (shakes on collision)
+  ctx.save();
+  applyShake(ctx);
+
+  // 1. Background gradient + texture
+  renderBackground();
+
+  // 2 & 3. Cloud layers (far then near) — scrolled inside updateAndRenderClouds
+  updateAndRenderClouds();
+
+  // 4. Pipes
+  renderPipes();
+
+  // 5. Particles
+  renderParticles();
+
+  // 6. Ghosty
+  renderGhosty(alpha);
+
+  ctx.restore(); // end shake region
+
+  // 7. HUD (never shakes)
+  renderHUD();
+
+  // 8. Score popups (above HUD, below overlays)
+  renderScorePopups();
+
+  // 9. Overlays
+  if (gameState === 'MENU') {
+    renderMenuOverlay();
+  } else if (gameState === 'PAUSED') {
+    renderPausedOverlay();
+  } else if (gameState === 'GAME_OVER') {
+    renderGameOverOverlay();
+  }
+}
+
+function physicsUpdate() {
+  ghosty.animFrame++; // always tick for idle bob animation
+
+  if (gameState !== 'PLAYING') {
+    // Death spin continues ticking even in GAME_OVER (before loop stops)
+    if (gameState === 'GAME_OVER') {
+      ghosty.deathAngle += CONFIG.deathSpinSpeed;
+    }
+    return;
+  }
+
+  ghosty.prevY = ghosty.y;
+  ghosty.vy    = Math.min(ghosty.vy + CONFIG.gravity, CONFIG.terminalVelocity);
+  ghosty.y    += ghosty.vy;
+
+  updateSquash();
+  updateInvincibility();
+  updatePipes();
+  checkCollisions();
+  emitParticles();
+}
+
+// ─── GHOSTY HELPERS ──────────────────────────────────────────
+
+function updateSquash() {
+  if (ghosty.squashTimer <= 0) return;
+  const t = 1 - ghosty.squashTimer / CONFIG.flapSquashFrames;
+  ghosty.squashX = lerp(CONFIG.flapSquashX, 1.0, t);
+  ghosty.squashY = lerp(CONFIG.flapSquashY, 1.0, t);
+  ghosty.squashTimer--;
+}
+
+function updateInvincibility() {
+  if (!ghosty.isInvincible) return;
+  ghosty.invincibleTimer -= 1000 / TARGET_FPS;
+  if (ghosty.invincibleTimer <= 0) {
+    ghosty.isInvincible = false;
+    triggerGameOver();
+    return;
+  }
+  const elapsed = CONFIG.invincibilityMs - ghosty.invincibleTimer;
+  ghosty.flashVisible = Math.floor(elapsed / CONFIG.flashIntervalMs) % 2 === 0;
+}
+
+function updatePipes() {
+  // 5.4 — scroll active pipes and release off-screen ones
+  for (let i = pipeState.pipes.length - 1; i >= 0; i--) {
+    const pipe = pipeState.pipes[i];
+    if (!pipe.active) continue;
+    pipe.x -= pipeState.speed;
+    checkScoring(pipe);
+    if (pipe.x + CONFIG.pipeWidth < 0) {
+      releasePipe(pipe);
+    }
+  }
+
+  // 5.2 — spawn new pipes when spacing allows
+  let lastPipe = null;
+  for (const pipe of pipeState.pipes) {
+    if (!pipe.active) continue;
+    if (!lastPipe || pipe.x > lastPipe.x) lastPipe = pipe;
+  }
+  if (!lastPipe || lastPipe.x <= CONFIG.canvasWidth - CONFIG.pipeSpacing) {
+    const spawnX = CONFIG.canvasWidth + CONFIG.pipeWidth;
+    const gapY = CONFIG.gapMargin + CONFIG.pipeGap / 2
+               + Math.random() * (CONFIG.canvasHeight - 2 * CONFIG.gapMargin - CONFIG.pipeGap);
+    acquirePipe(spawnX, gapY);
+  }
+
+  // 5.7 — progressive speed increase
+  const steps = Math.floor(pipeState.pipesPassed / CONFIG.speedMilestone);
+  pipeState.speed = Math.min(
+    CONFIG.pipeStartSpeed + steps * CONFIG.speedIncrement,
+    CONFIG.maxSpeed
+  );
+}
+
+function triggerGameOver() {
+  setState('GAME_OVER');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 12. GAME LOOP
+// ═══════════════════════════════════════════════════════════════
+
+const FIXED_STEP = 1000 / TARGET_FPS;
+let accumulator = 0;
+let lastTime    = 0;
+let rafId       = null;
+let shakeFrames = 0;
+
+function loop(timestamp) {
+  const dt = Math.min(timestamp - lastTime, 100); // cap at 100ms — prevents spiral of death
+  lastTime = timestamp;
+  accumulator += dt;
+
+  while (accumulator >= FIXED_STEP) {
+    physicsUpdate();
+    accumulator -= FIXED_STEP;
+  }
+
+  const alpha = accumulator / FIXED_STEP;
+  render(alpha);
+
+  if (gameState === 'PLAYING' || gameState === 'MENU') {
+    rafId = requestAnimationFrame(loop);
+  }
+}
+
+function startLoop() {
+  lastTime = performance.now();
+  if (rafId !== null) cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(loop);
+}
+
+function stopLoop() {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 13. INPUT
+// ═══════════════════════════════════════════════════════════════
+
+function onFlapInput() {
+  if (gameState === 'PLAYING')   { applyFlap(); return; }
+  if (gameState === 'MENU')      { setState('PLAYING'); return; }
+  if (gameState === 'GAME_OVER') { setState('PLAYING'); return; }
+}
+
+function onPauseInput() {
+  if (gameState === 'PLAYING') { setState('PAUSED'); return; }
+  if (gameState === 'PAUSED')  { setState('PLAYING'); return; }
+}
+
+function onKeyDown(e) {
+  if (e.code === 'Space')  { e.preventDefault(); onFlapInput(); }
+  if (e.code === 'Escape') { onPauseInput(); }
+}
+
+function onCanvasClick()      { onFlapInput(); }
+function onCanvasTouch(e)     { e.preventDefault(); onFlapInput(); }
+
+function onVisibilityChange() {
+  if (document.hidden) {
+    stopLoop();
+  } else if (gameState === 'PLAYING') {
+    lastTime = performance.now();
+    startLoop();
+  }
+}
+
+function registerInputHandlers() {
+  document.addEventListener('keydown', onKeyDown);
+  canvas.addEventListener('click', onCanvasClick);
+  canvas.addEventListener('touchstart', onCanvasTouch, { passive: false });
+  document.addEventListener('visibilitychange', onVisibilityChange);
+}
+
+// ─── STUBS (filled in later tasks) ───────────────────────────
+
+function resetGame() {
+  // Ghosty
+  ghosty.y             = CONFIG.canvasHeight / 2;
+  ghosty.prevY         = ghosty.y;
+  ghosty.vy            = 0;
+  ghosty.isInvincible  = false;
+  ghosty.invincibleTimer = 0;
+  ghosty.flashVisible  = true;
+  ghosty.squashX       = 1.0;
+  ghosty.squashY       = 1.0;
+  ghosty.squashTimer   = 0;
+  ghosty.deathAngle    = 0;
+  ghosty.animFrame     = 0;
+
+  // Pipes
+  for (const p of pipeState.pipes) { p.active = false; }
+  pipeState.pipes.length = 0;
+  pipeState.speed        = CONFIG.pipeStartSpeed;
+  pipeState.spawnTimer   = 0;
+  pipeState.pipesPassed  = 0;
+
+  // Score
+  scoreState.score = 0;
+
+  // Effects
+  shakeFrames    = 0;
+  particleCursor = 0;
+  for (const p of particles) { p.active = false; }
+  scorePopups.length = 0;
+}
+
+function applyFlap() {
+  ghosty.vy         = CONFIG.flapVelocity;
+  ghosty.squashX    = CONFIG.flapSquashX;
+  ghosty.squashY    = CONFIG.flapSquashY;
+  ghosty.squashTimer = CONFIG.flapSquashFrames;
+  playSound(assets.jumpSound);
+}
+
+function updateHighScore() {
+  if (scoreState.score > scoreState.highScore) {
+    scoreState.highScore = scoreState.score;
+    saveHighScore(scoreState.highScore);
+  }
+}
+
+function triggerShake() {
+  shakeFrames = CONFIG.shakeFrames;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 14. INIT
+// ═══════════════════════════════════════════════════════════════
+
+function init() {
+  resizeCanvas();
+  loadAssets().then(() => {
+    registerInputHandlers();
+    // gameState is already 'MENU' — call entry actions directly
+    resetGame();
+    startLoop();
+  });
+}
+
+init();
+  </script>
+</body>
+</html>
