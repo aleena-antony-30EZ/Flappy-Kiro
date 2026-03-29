@@ -1,0 +1,63 @@
+{
+  "_comment": "Physics values in real-world units (px/s or px/s²). Converted to per-frame at runtime using TARGET_FPS=60.",
+
+  "canvas": {
+    "width": 480,
+    "height": 640
+  },
+
+  "physics": {
+    "gravity_px_s2": 800,
+    "jumpVelocity_px_s": -300,
+    "terminalVelocity_px_s": 720,
+    "tiltVelocityScale": 4,
+    "maxTiltUp_deg": -25,
+    "maxTiltDown_deg": 90
+  },
+
+  "ghosty": {
+    "width_px": 40,
+    "height_px": 40,
+    "x_px": 120,
+    "hitboxInset_px": 4
+  },
+
+  "pipes": {
+    "startSpeed_px_s": 120,
+    "maxSpeed_px_s": 360,
+    "speedIncrement_px_s": 24,
+    "speedMilestone_pipes": 5,
+    "spacing_px": 350,
+    "gap_px": 140,
+    "width_px": 60,
+    "capWidth_px": 72,
+    "capHeight_px": 20,
+    "gapMargin_px": 60
+  },
+
+  "collision": {
+    "invincibilityMs": 500,
+    "flashIntervalMs": 80
+  },
+
+  "particles": {
+    "perFrame": 2,
+    "lifeFrames": 20,
+    "radius_px": 3
+  },
+
+  "screenShake": {
+    "durationFrames": 18,
+    "magnitude_px": 6
+  },
+
+  "scorePopup": {
+    "lifeFrames": 40,
+    "riseSpeed_px_frame": 1
+  },
+
+  "clouds": [
+    { "speed_px_s": 18, "opacity": 0.25 },
+    { "speed_px_s": 42, "opacity": 0.55 }
+  ]
+}

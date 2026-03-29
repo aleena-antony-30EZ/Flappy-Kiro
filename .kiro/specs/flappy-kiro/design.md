@@ -70,55 +70,63 @@ assets = {
   ghosty: HTMLImageElement,
   jumpSound: HTMLAudioElement,
   gameOverSound: HTMLAudioElement
+  // score chime is synthesized via Web Audio API — no file needed
 }
 ```
 
-Plays audio by cloning the audio element (allows overlapping playback):
+Plays file-based audio by cloning the element (allows overlapping playback):
 ```js
 function playSound(audio) {
-  audio.cloneNode().play();
+  try { audio.cloneNode().play().catch(() => {}); } catch (e) {}
 }
 ```
+
+The `AudioContext` for the score chime is lazy-initialized on the first user gesture to comply with browser autoplay policies.
 
 ### Central CONFIG Object
 
 All tunable constants are declared in a single `CONFIG` object at the top of the script. Game systems reference `CONFIG.*` — never raw literals.
 
+Values are sourced from `game-config.json` and converted to per-frame units at runtime using `TARGET_FPS = 60`.
+
 ```js
+const TARGET_FPS = 60;
+
+// All px/s² and px/s values divided by TARGET_FPS (or TARGET_FPS²) at init
 const CONFIG = {
   // Canvas
   canvasWidth:       480,
   canvasHeight:      640,
 
-  // Physics
-  gravity:           0.5,    // px/frame²
-  flapVelocity:     -8,      // px/frame (upward)
-  terminalVelocity:  12,     // px/frame (downward cap)
-  maxTiltUp:        -25,     // degrees
-  maxTiltDown:       90,     // degrees
-  tiltVelocityScale: 4,      // multiplier: angle = clamp(vy * scale, tiltUp, tiltDown)
+  // Physics (converted from game-config.json real-world units)
+  gravity:           800  / (TARGET_FPS ** 2),  // 0.222 px/frame²
+  flapVelocity:     -300  / TARGET_FPS,          // -5 px/frame
+  terminalVelocity:  720  / TARGET_FPS,          // 12 px/frame (downward cap)
+  maxTiltUp:        -25,                         // degrees
+  maxTiltDown:       90,                         // degrees
+  tiltVelocityScale: 4,
 
   // Ghosty
-  ghostWidth:        40,     // px
+  ghostWidth:        40,     // px (rendered size; sprite is 32×32, scaled up)
   ghostHeight:       40,     // px
   ghostX:            120,    // fixed horizontal position
+  hitboxRadius:      12,     // px (circle radius for collision)
 
-  // Pipes
-  pipeStartSpeed:    2.5,    // px/frame
-  pipeSpacing:       220,    // px between leading edges
-  pipeGap:           160,    // px gap height
-  pipeWidth:         60,     // px
-  pipeCapWidth:      72,     // px
-  pipeCapHeight:     20,     // px
-  gapMargin:         60,     // min px from canvas edge
-  speedIncrement:    0.4,    // px/frame added per milestone
-  speedMilestone:    5,      // pipes passed per speed step
-  maxSpeed:          6.0,    // px/frame hard cap
+  // Pipes (converted from game-config.json)
+  pipeStartSpeed:    120 / TARGET_FPS,   // 2.0 px/frame
+  pipeSpacing:       350,                // px between leading edges
+  pipeGap:           140,                // px gap height
+  pipeWidth:         60,                 // px
+  pipeCapWidth:      72,                 // px
+  pipeCapHeight:     20,                 // px
+  gapMargin:         60,                 // min px from canvas edge
+  speedIncrement:    24  / TARGET_FPS,   // 0.4 px/frame per milestone
+  speedMilestone:    5,                  // pipes passed per speed step
+  maxSpeed:          360 / TARGET_FPS,   // 6.0 px/frame hard cap
 
   // Collision
-  hitboxInset:       4,      // px inset on all sides for Ghosty circle radius
-  invincibilityMs:   500,    // ms of invincibility after pipe hit
-  flashIntervalMs:   80,     // ms between flash toggles
+  invincibilityMs:   500,
+  flashIntervalMs:   80,
 
   // Particles
   particlesPerFrame: 2,
@@ -126,17 +134,25 @@ const CONFIG = {
   particleRadius:    3,      // px
 
   // Screen shake
-  shakeFrames:       18,     // frames of shake after collision
+  shakeFrames:       18,
   shakeMagnitude:    6,      // max px offset
 
   // Score popup
   popupLife:         40,     // frames
   popupRiseSpeed:    1,      // px/frame upward
 
+  // Pseudo-animation
+  idleBobAmplitude:  2,      // px, vertical bob range
+  idleBobFrequency:  0.05,   // radians/frame
+  flapSquashX:       0.75,   // x scale on flap (squash)
+  flapSquashY:       1.25,   // y scale on flap (stretch)
+  flapSquashFrames:  6,      // frames to lerp back to 1.0
+  deathSpinSpeed:    15,     // degrees/frame during death spin
+
   // Clouds
   cloudLayers: [
-    { speed: 0.3, opacity: 0.25 },   // far layer
-    { speed: 0.7, opacity: 0.55 }    // near layer
+    { speed: 18 / TARGET_FPS, opacity: 0.25 },  // far layer: 0.3 px/frame
+    { speed: 42 / TARGET_FPS, opacity: 0.55 }   // near layer: 0.7 px/frame
   ]
 };
 ```
@@ -160,19 +176,72 @@ Transitions:
 
 ```js
 const ghosty = {
-  x: CONFIG.ghostX,       // fixed horizontal position
-  y: 320,                 // current physics y
-  prevY: 320,             // previous physics y (for interpolation)
-  vy: 0,                  // vertical velocity (px/frame)
+  x: CONFIG.ghostX,
+  y: 320,
+  prevY: 320,
+  vy: 0,
   width: CONFIG.ghostWidth,
   height: CONFIG.ghostHeight,
   invincible: false,
   invincibleTimer: 0,
-  flashVisible: true
+  flashVisible: true,
+  // Pseudo-animation state
+  animFrame: 0,        // increments each physics tick
+  squashX: 1.0,        // current x scale (lerps back to 1.0 after flap)
+  squashY: 1.0,        // current y scale
+  squashTimer: 0,      // frames remaining in squash lerp
+  deathAngle: 0        // accumulated spin angle during GAME_OVER
 }
 ```
 
 Rotation mapping: `angle = clamp(vy * CONFIG.tiltVelocityScale, CONFIG.maxTiltUp, CONFIG.maxTiltDown)` degrees.
+
+### Canvas Pseudo-Animations
+
+All animations use `ctx.save()` / `ctx.restore()` with translate + scale/rotate around the sprite centre. No spritesheet required — `ghosty.png` is a single 32×32 frame rendered at 40×40 px.
+
+**Idle bob** (MENU and between flaps during PLAYING):
+```js
+// Vertical sine bob — applied as a Y offset to the render position
+const bobOffset = Math.sin(ghosty.animFrame * CONFIG.idleBobFrequency)
+                  * CONFIG.idleBobAmplitude;
+```
+
+**Flap squash/stretch** (triggered on each flap input):
+```js
+// On flap: instantly set squash values
+ghosty.squashX = CONFIG.flapSquashX;   // 0.75 — narrow
+ghosty.squashY = CONFIG.flapSquashY;   // 1.25 — tall
+ghosty.squashTimer = CONFIG.flapSquashFrames;
+
+// Each physics tick: lerp back toward 1.0
+if (ghosty.squashTimer > 0) {
+  const t = 1 - ghosty.squashTimer / CONFIG.flapSquashFrames;
+  ghosty.squashX = lerp(CONFIG.flapSquashX, 1.0, t);
+  ghosty.squashY = lerp(CONFIG.flapSquashY, 1.0, t);
+  ghosty.squashTimer--;
+}
+```
+
+**Death spin** (during GAME_OVER transition, before screen stops):
+```js
+// Each frame after game over is triggered, before loop halts:
+ghosty.deathAngle += CONFIG.deathSpinSpeed;  // 15°/frame → full spin in 24 frames
+```
+
+**Render call** (combines tilt + squash + bob):
+```js
+ctx.save();
+ctx.translate(renderX + ghosty.width / 2, renderY + ghosty.height / 2 + bobOffset);
+ctx.rotate(tiltAngle * Math.PI / 180);
+ctx.scale(ghosty.squashX, ghosty.squashY);
+if (ghosty.flashVisible) {
+  ctx.drawImage(assets.ghosty,
+    -ghosty.width / 2, -ghosty.height / 2,
+    ghosty.width, ghosty.height);
+}
+ctx.restore();
+```
 
 ### Pipe System
 
@@ -200,14 +269,13 @@ Pipe objects are never garbage-collected mid-session. When a pipe scrolls off-sc
 
 Ghosty uses a **circle** hitbox (better fit for a round ghost sprite). Pipes use **axis-aligned rectangles**. Ground and ceiling are simple Y-boundary checks.
 
-**Ghosty circle** — derived from the inset constant:
+**Ghosty circle** — uses explicit `hitboxRadius` from CONFIG:
 ```js
 function ghostyCircle() {
-  const r = (Math.min(ghosty.width, ghosty.height) / 2) - CONFIG.hitboxInset;
   return {
     cx: ghosty.x + ghosty.width  / 2,
     cy: ghosty.y + ghosty.height / 2,
-    r
+    r:  CONFIG.hitboxRadius   // 12 px
   };
 }
 ```
@@ -275,10 +343,51 @@ Each cloud is a simple rounded rectangle drawn with Canvas 2D API.
 
 ### Audio / Visual Feedback
 
-- **Screen shake**: On collision, offset the canvas transform by a random small delta for ~300 ms.
-- **Particle trail**: Each frame during PLAYING, emit 1–2 small semi-transparent circles behind Ghosty that fade out over ~20 frames.
-- **Flash animation**: During invincibility frames, toggle `ghosty.flashVisible` every 80 ms.
-- **Score pop**: When score increments, render a "+1" text that floats upward and fades over ~40 frames.
+**Audio assets** (`<audio>` elements, cloned for overlapping playback):
+- `assets/jump.wav` — played on every flap input
+- `assets/game_over.wav` — played when game over is triggered
+
+**Score chime** — synthesized via Web Audio API, no file needed:
+```js
+// Lazy-init a single shared AudioContext (browsers require user gesture first)
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playScoreChime() {
+  try {
+    const ctx = getAudioCtx();
+    const now = ctx.currentTime;
+
+    // Two-note ascending chime: C5 (523 Hz) → E5 (659 Hz)
+    [523.25, 659.25].forEach((freq, i) => {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + i * 0.08);
+
+      gain.gain.setValueAtTime(0.25, now + i * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.2);
+
+      osc.start(now + i * 0.08);
+      osc.stop(now  + i * 0.08 + 0.2);
+    });
+  } catch (e) { /* silence on AudioContext failure */ }
+}
+```
+
+The chime plays two sine tones (C5 then E5, 80 ms apart, each fading over 200 ms) — a pleasant ascending two-note ding. Total duration ~0.28 s.
+
+**Visual feedback:**
+- **Screen shake**: On collision, offset the canvas transform by a random small delta for `CONFIG.shakeFrames` frames with magnitude `CONFIG.shakeMagnitude`.
+- **Particle trail**: Each frame during PLAYING, emit `CONFIG.particlesPerFrame` small semi-transparent circles behind Ghosty that fade out over `CONFIG.particleLife` frames.
+- **Flash animation**: During invincibility frames, toggle `ghosty.flashVisible` every `CONFIG.flashIntervalMs` ms.
+- **Score pop**: When score increments, push a `ScorePopup`; render "+1" floating upward and fading over `CONFIG.popupLife` frames.
 
 ---
 
@@ -540,6 +649,107 @@ The particle array is capped at `CONFIG.particlesPerFrame * CONFIG.particleLife`
 ### Canvas State Minimisation
 
 `ctx.save()` / `ctx.restore()` are only called when rotation or translation is needed (Ghosty sprite, screen shake). All other draw calls use direct property assignment.
+
+---
+
+## UI Mockups
+
+Canvas is 480×640 px. All overlays are drawn on top of the game world.
+
+### MENU State
+
+```
+┌──────────────────────────────────────────┐
+│  ░░░░░░░░  sky background  ░░░░░░░░░░░░  │
+│  ░░  (clouds scrolling slowly)  ░░░░░░░  │
+│                                          │
+│                                          │
+│           ╔══════════════╗               │
+│           ║  FLAPPY KIRO ║               │
+│           ╚══════════════╝               │
+│                                          │
+│               👻  (bobbing)              │
+│                                          │
+│         ┌────────────────────┐           │
+│         │   PRESS SPACE / TAP│           │
+│         │     TO  PLAY       │           │
+│         └────────────────────┘           │
+│                                          │
+│           High Score:  42                │
+│                                          │
+│                                          │
+│                                          │
+└──────────────────────────────────────────┘
+```
+
+### PLAYING State
+
+```
+┌──────────────────────────────────────────┐
+│  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │  ← far clouds (opacity 0.25)
+│  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │  ← near clouds (opacity 0.55)
+│       ██████                  ██████     │
+│       ██████                  ██████     │  ← top pipes
+│       ████████              ████████     │  ← pipe caps
+│                                          │  ← gap (140 px)
+│  👻·····                                 │  ← Ghosty + particle trail
+│                                          │
+│       ████████              ████████     │  ← pipe caps
+│       ██████                  ██████     │
+│       ██████                  ██████     │  ← bottom pipes
+│                                          │
+├──────────────────────────────────────────┤
+│         Score: 7  |  High: 42            │  ← HUD bar
+└──────────────────────────────────────────┘
+```
+
+Score popup appears briefly above Ghosty when a pipe is passed:
+```
+   +1  ↑ (fades out over 40 frames)
+   👻
+```
+
+### PAUSED State
+
+```
+┌──────────────────────────────────────────┐
+│  (game world frozen behind overlay)      │
+│                                          │
+│        ╔════════════════════╗            │
+│        ║      PAUSED        ║            │
+│        ║                    ║            │
+│        ║  Score: 7          ║            │
+│        ║                    ║            │
+│        ║  Press ESC         ║            │
+│        ║  to resume         ║            │
+│        ╚════════════════════╝            │
+│                                          │
+└──────────────────────────────────────────┘
+```
+
+### GAME_OVER State
+
+```
+┌──────────────────────────────────────────┐
+│  (game world frozen, Ghosty mid-spin)    │
+│                                          │
+│        ╔════════════════════╗            │
+│        ║    GAME  OVER      ║            │
+│        ║                    ║            │
+│        ║  Score:     12     ║            │
+│        ║  Best:      42     ║            │
+│        ║                    ║            │
+│        ║  SPACE / TAP       ║            │
+│        ║  to play again     ║            │
+│        ╚════════════════════╝            │
+│                                          │
+└──────────────────────────────────────────┘
+```
+
+If the current score beats the high score, an additional line appears:
+```
+│        ║  ★ NEW BEST! ★     ║            │
+```
 
 ---
 
